@@ -2,3 +2,4 @@ discord.py[voice]
 yt-dlp
 flask
 PyNaCl
+requests
