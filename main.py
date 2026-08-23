@@ -11,13 +11,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Yuri Music Bot is Online!"
+    return "Yuri Music Bot is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. Cấu hình Yt-dlp & FFmpeg ---
+# --- 2. YURI BOT (PHÁT NHẠC - ĐÃ SỬA LỖI SOUNDCLOUD) ---
 yt_dlp.utils.bug_reports_message = lambda: ''
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -33,6 +33,7 @@ YTDL_OPTIONS = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
+    'force_generic_extractor': False,
 }
 
 FFMPEG_OPTIONS = {
@@ -52,27 +53,31 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        
+        # Định nghĩa hàm riêng để tránh lỗi keyword argument 'before'
+        def fetch_info():
+            return ytdl.extract_info(url, download=not stream)
+
+        data = await loop.run_in_executor(None, fetch_info)
         if 'entries' in data:
             data = data['entries'][0]
+
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
-# --- 3. Cấu hình Discord Bot cho Yuri ---
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+yuri_bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.event
+@yuri_bot.event
 async def on_ready():
-    print(f"-> Yuri đã kết nối Discord thành công: {bot.user}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nhạc cùng cậu... 🎧"))
+    print(f"-> Yuri Online: {yuri_bot.user}")
+    await yuri_bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nhạc cùng cậu... 🎧"))
 
-# --- Lệnh Phát Nhạc ---
-@bot.command(name='play', aliases=['p'], help='Phát nhạc từ link hoặc từ khóa tìm kiếm')
+@yuri_bot.command(name='play', aliases=['p'])
 async def play(ctx, *, url):
     if not ctx.author.voice:
-        await ctx.send("*ngập ngừng* Cậu... cậu cần vào một kênh thoại (Voice Channel) trước đã...")
+        await ctx.send("*ngập ngừng* Cậu... cậu cần vào một kênh thoại trước đã...")
         return
 
     channel = ctx.author.voice.channel
@@ -81,42 +86,27 @@ async def play(ctx, *, url):
 
     async with ctx.typing():
         try:
-            player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
-            ctx.voice_client.play(player, after=lambda e: print(f'Lỗi nhạc: {e}') if e else None)
-            await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu đây: **{player.title}** 🎶")
+            player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
+            ctx.voice_client.play(player, after=lambda e: print(f'Lỗi: {e}') if e else None)
+            await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
         except Exception as e:
-            await ctx.send(f"*bối rối* Tôi gặp chút lỗi khi phát bài này rồi: {str(e)}")
+            await ctx.send(f"*bối rối* Tôi gặp chút lỗi khi phát bài này: {str(e)}")
 
-# --- Lệnh Dừng/Thoát Kênh ---
-@bot.command(name='stop', aliases=['leave'], help='Dừng phát nhạc và rời phòng')
+@yuri_bot.command(name='stop', aliases=['leave'])
 async def stop(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
-    else:
-        await ctx.send("*nhìn cậu* Tôi đang không ở trong kênh thoại nào cả...")
 
-# --- Lệnh Tạm Dừng / Tiếp Tục ---
-@bot.command(name='pause', help='Tạm dừng nhạc')
-async def pause(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.pause()
-        await ctx.send("*thì thầm* Đã tạm dừng nhạc rồi...")
-
-@bot.command(name='resume', help='Tiếp tục phát nhạc')
-async def resume(ctx):
-    if ctx.voice_client and ctx.voice_client.is_paused():
-        ctx.voice_client.resume()
-        await ctx.send("*mỉm cười* Tiếp tục phát nhạc nhé...")
-
-# --- 4. Khởi chạy ---
 if __name__ == "__main__":
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    # 1. Chạy Web Server trên luồng phụ
+    t_flask = threading.Thread(target=run_flask)
+    t_flask.daemon = True
+    t_flask.start()
 
-    discord_token = os.environ.get("DISCORD_TOKEN")
-    if discord_token:
-        bot.run(discord_token)
+    # 2. Chạy Yuri Bot trên luồng chính
+    yuri_token = os.environ.get("DISCORD_TOKEN")
+    if yuri_token:
+        yuri_bot.run(yuri_token)
     else:
-        print("LỖI: Chưa nhập DISCORD_TOKEN trong Environment!")
+        print("Lỗi: Không tìm thấy DISCORD_TOKEN trong biến môi trường!")
