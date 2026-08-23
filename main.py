@@ -6,8 +6,9 @@ from flask import Flask
 import discord
 from discord.ext import commands
 import yt_dlp
+import requests
 
-# --- 1. Web Server ngầm giữ Render Online 24/7 ---
+# --- 1. Web Server giữ Render Online 24/7 ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -18,8 +19,17 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. Cấu hình yt-dlp & FFmpeg ---
-yt_dlp.utils.bug_reports_message = lambda: ''
+# --- 2. Hàm giải mã Link SoundCloud rút gọn ---
+def resolve_url(url):
+    if "on.soundcloud.com" in url:
+        try:
+            res = requests.get(url, allow_redirects=True, timeout=5)
+            return res.url
+        except Exception:
+            return url
+    return url
+
+# --- 3. Cấu hình yt-dlp & FFmpeg ---
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -54,8 +64,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
         
-        # Dùng functools.partial thay cho lambda để tránh lỗi unexpected keyword argument 'before'
-        to_run = partial(ytdl.extract_info, url, download=not stream)
+        # 1. Mở rộng link rút gọn trước
+        full_url = await loop.run_in_executor(None, resolve_url, url)
+        
+        # 2. Lấy dữ liệu bài hát
+        to_run = partial(ytdl.extract_info, full_url, download=not stream)
         data = await loop.run_in_executor(None, to_run)
 
         if 'entries' in data:
@@ -64,7 +77,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
-# --- 3. Discord Bot Của Yuri ---
+# --- 4. Discord Bot của Yuri ---
 intents = discord.Intents.default()
 intents.message_content = True
 yuri_bot = commands.Bot(command_prefix="!", intents=intents)
@@ -102,8 +115,6 @@ async def stop(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
-    else:
-        await ctx.send("*nhìn cậu* Tôi đang không ở trong kênh thoại nào...")
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
