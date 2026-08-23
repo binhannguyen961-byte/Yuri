@@ -17,7 +17,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. YURI BOT (PHÁT NHẠC - ĐÃ SỬA LỖI SOUNDCLOUD) ---
+# --- 2. YURI BOT (PHÁT NHẠC) ---
 yt_dlp.utils.bug_reports_message = lambda: ''
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -54,11 +54,8 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
         
-        # Định nghĩa hàm riêng để tránh lỗi keyword argument 'before'
-        def fetch_info():
-            return ytdl.extract_info(url, download=not stream)
-
-        data = await loop.run_in_executor(None, fetch_info)
+        # Gọi trực tiếp qua functools/executor an toàn
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
         if 'entries' in data:
             data = data['entries'][0]
 
@@ -87,7 +84,13 @@ async def play(ctx, *, url):
     async with ctx.typing():
         try:
             player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
-            ctx.voice_client.play(player, after=lambda e: print(f'Lỗi: {e}') if e else None)
+            
+            # Sửa hàm callback sau khi phát xong để tránh bị xung đột tham số
+            def after_playing(error):
+                if error:
+                    print(f"Lỗi khi phát nhạc: {error}")
+
+            ctx.voice_client.play(player, after=after_playing)
             await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
         except Exception as e:
             await ctx.send(f"*bối rối* Tôi gặp chút lỗi khi phát bài này: {str(e)}")
@@ -99,14 +102,12 @@ async def stop(ctx):
         await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
 
 if __name__ == "__main__":
-    # 1. Chạy Web Server trên luồng phụ
     t_flask = threading.Thread(target=run_flask)
     t_flask.daemon = True
     t_flask.start()
 
-    # 2. Chạy Yuri Bot trên luồng chính
     yuri_token = os.environ.get("DISCORD_TOKEN")
     if yuri_token:
         yuri_bot.run(yuri_token)
     else:
-        print("Lỗi: Không tìm thấy DISCORD_TOKEN trong biến môi trường!")
+        print("Lỗi: Không tìm thấy DISCORD_TOKEN!")
