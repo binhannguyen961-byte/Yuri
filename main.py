@@ -1,12 +1,13 @@
 import os
 import asyncio
 import threading
+from functools import partial
 from flask import Flask
 import discord
 from discord.ext import commands
 import yt_dlp
 
-# --- 1. Web Server giữ Render Online 24/7 ---
+# --- 1. Web Server ngầm giữ Render Online 24/7 ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,7 +18,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. YURI BOT (PHÁT NHẠC) ---
+# --- 2. Cấu hình yt-dlp & FFmpeg ---
 yt_dlp.utils.bug_reports_message = lambda: ''
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -33,7 +34,6 @@ YTDL_OPTIONS = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
-    'force_generic_extractor': False,
 }
 
 FFMPEG_OPTIONS = {
@@ -54,14 +54,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
         
-        # Gọi trực tiếp qua functools/executor an toàn
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        # Dùng functools.partial thay cho lambda để tránh lỗi unexpected keyword argument 'before'
+        to_run = partial(ytdl.extract_info, url, download=not stream)
+        data = await loop.run_in_executor(None, to_run)
+
         if 'entries' in data:
             data = data['entries'][0]
 
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
+# --- 3. Discord Bot Của Yuri ---
 intents = discord.Intents.default()
 intents.message_content = True
 yuri_bot = commands.Bot(command_prefix="!", intents=intents)
@@ -85,10 +88,9 @@ async def play(ctx, *, url):
         try:
             player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
             
-            # Sửa hàm callback sau khi phát xong để tránh bị xung đột tham số
             def after_playing(error):
                 if error:
-                    print(f"Lỗi khi phát nhạc: {error}")
+                    print(f"Lỗi phát nhạc: {error}")
 
             ctx.voice_client.play(player, after=after_playing)
             await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
@@ -100,6 +102,8 @@ async def stop(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
+    else:
+        await ctx.send("*nhìn cậu* Tôi đang không ở trong kênh thoại nào...")
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
