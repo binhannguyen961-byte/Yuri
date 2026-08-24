@@ -4,4 +4,3 @@ flask
 PyNaCl
 requests
 spotipy
-google-generativeai>=0.8.3
