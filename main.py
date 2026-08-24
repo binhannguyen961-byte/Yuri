@@ -1,257 +1,103 @@
 import os
 import asyncio
 import threading
-import re
-from functools import partial
 from flask import Flask
 import discord
 from discord.ext import commands
-import yt_dlp
-import requests
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+import google.generativeai as genai
 
 # --- 1. Web Server ngầm giữ Render Online 24/7 ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Yuri Music Bot is Live!"
+    return "Monika AI is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. Kết nối Spotify API ---
-SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID")
-SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET")
+# --- 2. Cấu hình Gemini API & Auto-detect Keys ---
+API_KEYS = []
+for env_name, env_val in os.environ.items():
+    if ("GEMINI" in env_name or "KEY" in env_name) and "DISCORD" not in env_name:
+        if env_val and env_val not in API_KEYS:
+            API_KEYS.append(env_val)
 
-sp = None
-if SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET:
-    try:
-        sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-            client_id=SPOTIPY_CLIENT_ID,
-            client_secret=SPOTIPY_CLIENT_SECRET
-        ))
-    except Exception as e:
-        print(f"Lỗi kết nối Spotify API: {e}")
+current_key_idx = 0
 
-# --- 3. Cấu hình yt-dlp & FFmpeg ---
-YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'mp3',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'noplaylist': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': False,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-}
+# Cập nhật sang danh sách các Model Gemini 2.0 / 2.5 mới nhất
+MODELS_TO_TRY = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash-latest'
+]
 
-FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
-}
+async def ask_monika(prompt):
+    global current_key_idx
 
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+    if not API_KEYS:
+        return "*bối rối* Tôi chưa nhận được API Key nào cả..."
 
-# Hàm làm sạch tên bài hát để tìm kiếm bài liên quan chính xác
-def clean_title(title):
-    # Bỏ các từ khóa rác hay gặp trên SoundCloud/YouTube
-    title = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title)
-    title = re.sub(r'http\S+|www\.\S+', '', title)
-    return title.strip()
+    for _ in range(len(API_KEYS)):
+        active_key = API_KEYS[current_key_idx]
+        genai.configure(api_key=active_key)
 
-# Hàm lấy bài hát liên quan cho Autoplay
-def get_related_track(song_title):
-    try:
-        search_query = f"ytsearch5:{clean_title(song_title)} music"
-        with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
-            info = ydl.extract_info(search_query, download=False)
-            if 'entries' in info and len(info['entries']) > 1:
-                # Lấy bài thứ 2 trong kết quả tìm kiếm
-                selected = info['entries'][1]
-                return selected.get('webpage_url') or selected.get('url')
-    except Exception as e:
-        print(f"Lỗi Autoplay: {e}")
-    return None
-
-class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5):
-        super().__init__(source, volume)
-        self.data = data
-        self.title = data.get('title')
-        self.url = data.get('webpage_url') or data.get('url')
-
-    @classmethod
-    async def from_url(cls, url, *, loop=None, stream=True):
-        loop = loop or asyncio.get_event_loop()
-        query = url
-
-        # Giải mã link SoundCloud rút gọn
-        if "on.soundcloud.com" in url:
+        for model_name in MODELS_TO_TRY:
             try:
-                res = await loop.run_in_executor(None, lambda: requests.get(url, allow_redirects=True, timeout=5))
-                query = res.url
-            except Exception:
-                query = url
-
-        # Xử lý Link Spotify
-        if "spotify.com/track/" in url and sp:
-            try:
-                track_info = await loop.run_in_executor(None, lambda: sp.track(url))
-                track_name = track_info['name']
-                artist_name = track_info['artists'][0]['name']
-                query = f"ytsearch:{track_name} {artist_name}"
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction="Bạn là Monika từ Doki Doki Literature Club. Bạn dịu dàng, thông minh, hay quan tâm và luôn xưng 'tôi' và gọi người dùng là 'cậu'. Hãy trả lời tự nhiên, ngắn gọn và có kèm hành động đặt trong ngoặc (*...*)."
+                )
+                response = await asyncio.to_thread(model.generate_content, prompt)
+                return response.text
             except Exception as e:
-                print(f"Lỗi trích xuất Spotify: {e}")
+                err_msg = str(e)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "404" in err_msg or "not found" in err_msg.lower():
+                    continue
+                else:
+                    break
+        
+        # Xoay sang Key tiếp theo nếu Key hiện tại hết Quota
+        current_key_idx = (current_key_idx + 1) % len(API_KEYS)
 
-        to_run = partial(ytdl.extract_info, query, download=not stream)
-        data = await loop.run_in_executor(None, to_run)
+    return "*nắm lấy tay cậu* Hệ thống nhận câu hỏi đang bị quá tải một chút. Cậu đợi tôi khoảng 30 giây nữa rồi hẵng nhắn lại nhé..."
 
-        if 'entries' in data:
-            data = data['entries'][0]
-
-        filename = data['url'] if stream else ytdl.prepare_filename(data)
-        return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
-
-# --- 4. Quản lý trạng thái Phát nhạc ---
-music_queues = {}
-loop_states = {}
-autoplay_states = {}
-current_songs = {}
-
-def get_queue(ctx):
-    if ctx.guild.id not in music_queues:
-        music_queues[ctx.guild.id] = []
-    return music_queues[ctx.guild.id]
-
-# --- 5. Discord Bot Yuri ---
+# --- 3. Discord Bot Monika ---
 intents = discord.Intents.default()
 intents.message_content = True
-yuri_bot = commands.Bot(command_prefix="!", intents=intents)
+monika_bot = commands.Bot(command_prefix="!", intents=intents)
 
-def play_next(ctx):
-    guild_id = ctx.guild.id
-    is_looping = loop_states.get(guild_id, False)
-    is_autoplay = autoplay_states.get(guild_id, True)
-    queue = get_queue(ctx)
-
-    # 1. Nếu bật Loop
-    if is_looping and guild_id in current_songs:
-        url, title = current_songs[guild_id]
-        asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
-        return
-
-    # 2. Nếu có bài trong Hàng chờ (Queue)
-    if len(queue) > 0:
-        url, title = queue.pop(0)
-        asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
-        return
-
-    # 3. Autoplay phát bài tiếp theo
-    if is_autoplay and guild_id in current_songs:
-        _, last_title = current_songs[guild_id]
-        future = yuri_bot.loop.run_in_executor(None, get_related_track, last_title)
-        
-        async def handle_autoplay():
-            related_url = await future
-            if related_url:
-                await ctx.send("*khẽ mỉm cười* Đang tự động phát bài hát tiếp theo cho cậu... 📻")
-                await play_song(ctx, related_url, related_url)
-            else:
-                if guild_id in current_songs:
-                    del current_songs[guild_id]
-
-        asyncio.run_coroutine_threadsafe(handle_autoplay(), yuri_bot.loop)
-    else:
-        if guild_id in current_songs:
-            del current_songs[guild_id]
-
-async def play_song(ctx, url, title):
-    async with ctx.typing():
-        try:
-            player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
-            # Lưu lại thông tin bài hát đang phát chính xác
-            current_songs[ctx.guild.id] = (player.url, player.title)
-            ctx.voice_client.play(player, after=lambda e: play_next(ctx))
-            await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
-        except Exception as e:
-            await ctx.send(f"*bối rối* Tôi gặp chút lỗi khi phát bài này: {str(e)}")
-            play_next(ctx)
-
-@yuri_bot.event
+@monika_bot.event
 async def on_ready():
-    print(f"-> Yuri Online: {yuri_bot.user}")
-    await yuri_bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nhạc cùng cậu... 🎧"))
+    print(f"-> Monika Online: {monika_bot.user}")
+    await monika_bot.change_presence(activity=discord.Game(name="DDLC with you... 💚"))
 
-@yuri_bot.command(name='play', aliases=['p'])
-async def play(ctx, *, url):
-    if not ctx.author.voice:
-        await ctx.send("*ngập ngừng* Cậu... cậu cần vào một kênh thoại trước đã...")
+@monika_bot.event
+async def on_message(message):
+    if message.author == monika_bot.user:
         return
 
-    if ctx.voice_client is None:
-        await ctx.author.voice.channel.connect()
+    if monika_bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+        clean_content = message.content.replace(f'<@{monika_bot.user.id}>', '').strip()
+        
+        if not clean_content:
+            await message.channel.send("*mỉm cười* Cậu gọi tôi có việc gì thế?")
+            return
 
-    queue = get_queue(ctx)
+        async with message.channel.typing():
+            reply = await ask_monika(clean_content)
+            await message.channel.send(reply)
 
-    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-        queue.append((url, url))
-        await ctx.send(f"*cúi đầu* Tôi đã thêm bài hát này vào danh sách chờ cho cậu rồi nhé 🎵")
-    else:
-        await play_song(ctx, url, url)
-
-@yuri_bot.command(name='autoplay', aliases=['ap'])
-async def autoplay(ctx):
-    guild_id = ctx.guild.id
-    current_state = autoplay_states.get(guild_id, True)
-    autoplay_states[guild_id] = not current_state
-
-    if autoplay_states[guild_id]:
-        await ctx.send("*gật đầu* Đã bật tự động phát bài hát liên quan 📻")
-    else:
-        await ctx.send("*nhìn cậu* Đã tắt tự động phát bài hát liên quan ⏹️")
-
-@yuri_bot.command(name='loop', aliases=['l'])
-async def loop(ctx):
-    guild_id = ctx.guild.id
-    loop_states[guild_id] = not loop_states.get(guild_id, False)
-    status = "lặp lại bài hát hiện tại 🔁" if loop_states[guild_id] else "tắt lặp lại ➡️"
-    await ctx.send(f"*đỏ mặt* Đã {status} cho cậu...")
-
-@yuri_bot.command(name='skip', aliases=['s'])
-async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        loop_states[ctx.guild.id] = False
-        ctx.voice_client.stop()
-        await ctx.send("*khẽ gật đầu* Tôi đã bỏ qua bài hát hiện tại...")
-    else:
-        await ctx.send("*bối rối* Hiện tại không có bài nào đang phát cả...")
-
-@yuri_bot.command(name='stop', aliases=['leave'])
-async def stop(ctx):
-    guild_id = ctx.guild.id
-    if guild_id in music_queues:
-        music_queues[guild_id].clear()
-    loop_states[guild_id] = False
-
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
+    await monika_bot.process_commands(message)
 
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
     t_flask.daemon = True
     t_flask.start()
 
-    yuri_token = os.environ.get("DISCORD_TOKEN")
-    if yuri_token:
-        yuri_bot.run(yuri_token)
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        monika_bot.run(token)
     else:
         print("Lỗi: Không tìm thấy DISCORD_TOKEN!")
