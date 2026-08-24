@@ -67,19 +67,14 @@ FFMPEG_OPTIONS = {
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-# Hàm lấy bài hát liên quan (Related Tracks) cho Autoplay
-def get_related_track(url):
+def get_related_track(title):
     try:
-        # Bật trích xuất thông tin chi tiết để lấy danh sách gợi ý
-        ydl_opts = YTDL_OPTIONS.copy()
-        ydl_opts['noplaylist'] = False
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            # Lấy danh sách bài gợi ý nếu có
-            if 'related_tracks' in info and len(info['related_tracks']) > 0:
-                return info['related_tracks'][0].get('webpage_url') or info['related_tracks'][0].get('url')
-            elif 'entries' in info and len(info['entries']) > 1:
-                return info['entries'][1].get('webpage_url') or info['entries'][1].get('url')
+        search_query = f"ytsearch5:{title} radio mix"
+        with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
+            info = ydl.extract_info(search_query, download=False)
+            if 'entries' in info and len(info['entries']) > 1:
+                selected = info['entries'][1]
+                return selected.get('webpage_url') or selected.get('url')
     except Exception:
         pass
     return None
@@ -123,35 +118,36 @@ yuri_bot = commands.Bot(command_prefix="!", intents=intents)
 def play_next(ctx):
     guild_id = ctx.guild.id
     is_looping = loop_states.get(guild_id, False)
-    is_autoplay = autoplay_states.get(guild_id, True) # Mặc định bật Autoplay
+    is_autoplay = autoplay_states.get(guild_id, True)
     queue = get_queue(ctx)
 
-    # 1. Nếu bật Loop
     if is_looping and guild_id in current_songs:
         url, title = current_songs[guild_id]
         asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
         return
 
-    # 2. Nếu có bài trong hàng chờ người dùng thêm vào
     if len(queue) > 0:
         url, title = queue.pop(0)
         asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
         return
 
-    # 3. Tự động tìm bài liên quan (Autoplay SoundCloud/YouTube)
     if is_autoplay and guild_id in current_songs:
-        last_url, _ = current_songs[guild_id]
-        future = yuri_bot.loop.run_in_executor(None, get_related_track, last_url)
+        _, last_title = current_songs[guild_id]
+        future = yuri_bot.loop.run_in_executor(None, get_related_track, last_title)
         
         async def handle_autoplay():
             related_url = await future
             if related_url:
-                await ctx.send("*khẽ mỉm cười* Đang tự động phát bài hát tiếp theo liên quan cho cậu... 📻")
+                await ctx.send("*khẽ mỉm cười* Đang tự động phát bài hát tiếp theo cho cậu... 📻")
                 await play_song(ctx, related_url, related_url)
             else:
-                del current_songs[guild_id]
+                if guild_id in current_songs:
+                    del current_songs[guild_id]
 
         asyncio.run_coroutine_threadsafe(handle_autoplay(), yuri_bot.loop)
+    else:
+        if guild_id in current_songs:
+            del current_songs[guild_id]
 
 async def play_song(ctx, url, title):
     async with ctx.typing():
@@ -210,6 +206,8 @@ async def skip(ctx):
         loop_states[ctx.guild.id] = False
         ctx.voice_client.stop()
         await ctx.send("*khẽ gật đầu* Tôi đã bỏ qua bài hát hiện tại...")
+    else:
+        await ctx.send("*bối rối* Hiện tại không có bài nào đang phát cả...")
 
 @yuri_bot.command(name='stop', aliases=['leave'])
 async def stop(ctx):
@@ -230,3 +228,5 @@ if __name__ == "__main__":
     yuri_token = os.environ.get("DISCORD_TOKEN")
     if yuri_token:
         yuri_bot.run(yuri_token)
+    else:
+        print("Lỗi: Không tìm thấy DISCORD_TOKEN!")
