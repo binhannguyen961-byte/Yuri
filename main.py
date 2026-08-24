@@ -1,6 +1,7 @@
 import os
 import asyncio
 import threading
+import re
 from functools import partial
 from flask import Flask
 import discord
@@ -21,27 +22,19 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. Xử lý Link SoundCloud & Spotify ---
-def resolve_url(url):
-    if "on.soundcloud.com" in url:
-        try:
-            res = requests.get(url, allow_redirects=True, timeout=5)
-            return res.url
-        except Exception:
-            return url
-            
-    if "open.spotify.com/track" in url:
-        try:
-            sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-                client_id=os.environ.get("SPOTIPY_CLIENT_ID", ""),
-                client_secret=os.environ.get("SPOTIPY_CLIENT_SECRET", "")
-            ))
-            track_info = sp.track(url)
-            return f"ytsearch:{track_info['name']} {track_info['artists'][0]['name']}"
-        except Exception:
-            return url
+# --- 2. Kết nối Spotify API ---
+SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID")
+SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET")
 
-    return url
+sp = None
+if SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET:
+    try:
+        sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+            client_id=SPOTIPY_CLIENT_ID,
+            client_secret=SPOTIPY_CLIENT_SECRET
+        ))
+    except Exception as e:
+        print(f"Lỗi kết nối Spotify API: {e}")
 
 # --- 3. Cấu hình yt-dlp & FFmpeg ---
 YTDL_OPTIONS = {
@@ -67,16 +60,25 @@ FFMPEG_OPTIONS = {
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-def get_related_track(title):
+# Hàm làm sạch tên bài hát để tìm kiếm bài liên quan chính xác
+def clean_title(title):
+    # Bỏ các từ khóa rác hay gặp trên SoundCloud/YouTube
+    title = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title)
+    title = re.sub(r'http\S+|www\.\S+', '', title)
+    return title.strip()
+
+# Hàm lấy bài hát liên quan cho Autoplay
+def get_related_track(song_title):
     try:
-        search_query = f"ytsearch5:{title} radio mix"
+        search_query = f"ytsearch5:{clean_title(song_title)} music"
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
             info = ydl.extract_info(search_query, download=False)
             if 'entries' in info and len(info['entries']) > 1:
+                # Lấy bài thứ 2 trong kết quả tìm kiếm
                 selected = info['entries'][1]
                 return selected.get('webpage_url') or selected.get('url')
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Lỗi Autoplay: {e}")
     return None
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -89,8 +91,27 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
-        full_url = await loop.run_in_executor(None, resolve_url, url)
-        to_run = partial(ytdl.extract_info, full_url, download=not stream)
+        query = url
+
+        # Giải mã link SoundCloud rút gọn
+        if "on.soundcloud.com" in url:
+            try:
+                res = await loop.run_in_executor(None, lambda: requests.get(url, allow_redirects=True, timeout=5))
+                query = res.url
+            except Exception:
+                query = url
+
+        # Xử lý Link Spotify
+        if "spotify.com/track/" in url and sp:
+            try:
+                track_info = await loop.run_in_executor(None, lambda: sp.track(url))
+                track_name = track_info['name']
+                artist_name = track_info['artists'][0]['name']
+                query = f"ytsearch:{track_name} {artist_name}"
+            except Exception as e:
+                print(f"Lỗi trích xuất Spotify: {e}")
+
+        to_run = partial(ytdl.extract_info, query, download=not stream)
         data = await loop.run_in_executor(None, to_run)
 
         if 'entries' in data:
@@ -110,7 +131,7 @@ def get_queue(ctx):
         music_queues[ctx.guild.id] = []
     return music_queues[ctx.guild.id]
 
-# --- 5. Discord Bot của Yuri ---
+# --- 5. Discord Bot Yuri ---
 intents = discord.Intents.default()
 intents.message_content = True
 yuri_bot = commands.Bot(command_prefix="!", intents=intents)
@@ -121,16 +142,19 @@ def play_next(ctx):
     is_autoplay = autoplay_states.get(guild_id, True)
     queue = get_queue(ctx)
 
+    # 1. Nếu bật Loop
     if is_looping and guild_id in current_songs:
         url, title = current_songs[guild_id]
         asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
         return
 
+    # 2. Nếu có bài trong Hàng chờ (Queue)
     if len(queue) > 0:
         url, title = queue.pop(0)
         asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
         return
 
+    # 3. Autoplay phát bài tiếp theo
     if is_autoplay and guild_id in current_songs:
         _, last_title = current_songs[guild_id]
         future = yuri_bot.loop.run_in_executor(None, get_related_track, last_title)
@@ -153,6 +177,7 @@ async def play_song(ctx, url, title):
     async with ctx.typing():
         try:
             player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
+            # Lưu lại thông tin bài hát đang phát chính xác
             current_songs[ctx.guild.id] = (player.url, player.title)
             ctx.voice_client.play(player, after=lambda e: play_next(ctx))
             await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
@@ -189,9 +214,9 @@ async def autoplay(ctx):
     autoplay_states[guild_id] = not current_state
 
     if autoplay_states[guild_id]:
-        await ctx.send("*gật đầu* Đã bật tự động tìm và phát bài liên quan khi hết nhạc 📻")
+        await ctx.send("*gật đầu* Đã bật tự động phát bài hát liên quan 📻")
     else:
-        await ctx.send("*nhìn cậu* Đã tắt tự động phát bài liên quan ⏹️")
+        await ctx.send("*nhìn cậu* Đã tắt tự động phát bài hát liên quan ⏹️")
 
 @yuri_bot.command(name='loop', aliases=['l'])
 async def loop(ctx):
