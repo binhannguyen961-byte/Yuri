@@ -43,7 +43,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # ================= 3. CẤU HÌNH PHÁT NHẠC & QUẢN LÝ VOICE =================
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
-    "extractflat": "in_playlist",
+    "extractflat": True,
     "noplaylist": False,
     "quiet": True,
 }
@@ -58,11 +58,11 @@ FFMPEG_OPTIONS = {
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 queues = {}
 loop_status = {}
-auto_disconnect_tasks = {}  # Lưu trữ bộ đếm thời gian 5 phút cho mỗi Guild
+auto_disconnect_tasks = {}
 
 
 async def auto_stop_after_timeout(ctx, delay=300):
-  """Hàm chờ 5 phút (300 giây) để ngắt voice nếu phòng trống"""
+  """Hàm chờ 5 phút để ngắt voice nếu phòng trống"""
   await asyncio.sleep(delay)
   guild_id = ctx.guild.id
 
@@ -110,7 +110,7 @@ def check_queue_and_play(ctx):
         auto_disconnect_tasks[guild_id].cancel()
         del auto_disconnect_tasks[guild_id]
 
-  # 2. XỬ LÝ PHÁT NHẠC
+  # 2. XỬ LÝ LẶP BÀI HOẶC CHUYỂN BÀI
   if loop_status.get(guild_id, False) and hasattr(
       ctx.voice_client, "current_song"
   ):
@@ -124,23 +124,22 @@ def check_queue_and_play(ctx):
 
   async def play_async():
     try:
-      if not song["stream_url"].startswith("http") or "soundcloud.com" in song[
-          "stream_url"
-      ]:
-        real_data = await bot.loop.run_in_executor(
-            None, lambda: ytdl.extract_info(song["stream_url"], download=False)
-        )
-        stream_target = real_data["url"]
-      else:
-        stream_target = song["stream_url"]
+      # Lấy dữ liệu audio trực tiếp từ URL chuẩn đã xử lý
+      info = await bot.loop.run_in_executor(
+          None,
+          lambda: yt_dlp.YoutubeDL({"format": "bestaudio/best"}).extract_info(
+              song["webpage_url"], download=False
+          ),
+      )
+      stream_target = info["url"]
 
       source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
       ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
       await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
     except Exception as e:
       await ctx.send(
-          f"⚠️ **Không thể tải bài {song.get('title', '')}, đang chuyển bài"
-          " tiếp...**"
+          f"⚠️ **Không thể phát bài {song.get('title', '')}:** `{e}`. Đang thử"
+          " chuyển bài tiếp theo..."
       )
       check_queue_and_play(ctx)
 
@@ -150,7 +149,6 @@ def check_queue_and_play(ctx):
 # ================= 4. EVENT THEO DÕI VOICE STATE =================
 @bot.event
 async def on_voice_state_update(member, before, after):
-  """Hủy hoặc khởi tạo đếm ngược khi người dùng ra/vào phòng voice"""
   if member.bot:
     return
 
@@ -220,10 +218,7 @@ async def join(ctx):
       await channel.connect()
     await ctx.send(f"☕ Yuri đã vào **{channel.name}**...")
   except Exception as e:
-    await ctx.send(
-        f"⚠️ **Không thể kết nối Voice Channel.** Lỗi: `{e}`\n*(Hãy kiểm tra xem"
-        " đã cài pynacl chưa)*"
-    )
+    await ctx.send(f"⚠️ **Không thể kết nối Voice Channel:** `{e}`")
 
 
 @bot.command(name="play")
@@ -247,38 +242,36 @@ async def play(ctx, url: str):
     if guild_id not in queues:
       queues[guild_id] = []
 
+    # XỬ LÝ PLAYLIST
     if "entries" in data and len(data["entries"]) > 0:
       playlist_title = data.get("title", "Playlist")
       added_count = 0
 
       for entry in data["entries"]:
         if entry:
-          song_url = entry.get("url") or entry.get("webpage_url")
-          song_title = entry.get("title", "Bài hát không tên")
-          if song_url and not song_url.startswith("http"):
-            song_url = f"https://soundcloud.com/{song_url}"
-
-          queues[guild_id].append(
-              {"stream_url": song_url, "title": song_title}
+          # Sửa triệt để lỗi đường dẫn SoundCloud bị thiếu domain
+          raw_url = (
+              entry.get("webpage_url")
+              or entry.get("url")
+              or entry.get("permalink_url")
           )
-          added_count += 1
+          if raw_url:
+            if not raw_url.startswith("http"):
+              song_url = f"https://soundcloud.com/{raw_url.lstrip('/')}"
+            else:
+              song_url = raw_url
+
+            song_title = entry.get("title", "Bài hát không tên")
+            queues[guild_id].append(
+                {"webpage_url": song_url, "title": song_title}
+            )
+            added_count += 1
 
       if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-        first_song = queues[guild_id].pop(0)
-        ctx.voice_client.current_song = first_song
-
-        real_data = await bot.loop.run_in_executor(
-            None,
-            lambda: ytdl.extract_info(
-                first_song["stream_url"], download=False
-            ),
-        )
-        source = discord.FFmpegPCMAudio(real_data["url"], **FFMPEG_OPTIONS)
-        ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-
+        check_queue_and_play(ctx)
         await ctx.send(
-            f"🎶 Đã thêm **{added_count}** bài từ playlist"
-            f" **{playlist_title}**.\n☕ Đang phát: **{first_song['title']}**"
+            f"🎶 Đã thêm **{added_count}** bài từ playlist **{playlist_title}**"
+            " vào danh sách phát."
         )
       else:
         await ctx.send(
@@ -286,9 +279,11 @@ async def play(ctx, url: str):
             f" **{playlist_title}** vào hàng đợi."
         )
 
+    # XỬ LÝ BÀI HÁT ĐƠN LẺ
     else:
+      song_url = data.get("webpage_url") or data.get("url") or url
       song = {
-          "stream_url": data["url"],
+          "webpage_url": song_url,
           "title": data.get("title", "Bài hát không tên"),
       }
 
@@ -299,10 +294,8 @@ async def play(ctx, url: str):
             f" (#{len(queues[guild_id])})."
         )
       else:
-        ctx.voice_client.current_song = song
-        source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
-        ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-        await ctx.send(f"☕ Đang phát: **{song['title']}**")
+        queues[guild_id].insert(0, song)
+        check_queue_and_play(ctx)
 
 
 @bot.command(name="queue")
