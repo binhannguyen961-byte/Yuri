@@ -36,15 +36,15 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True  # Bắt buộc bật Voice States Intent trong Discord Developer Portal
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ================= 3. CẤU HÌNH PHÁT NHẠC =================
+# ================= 3. CẤU HÌNH PHÁT NHẠC (HỖ TRỢ PLAYLIST) =================
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
-    "extractflat": False,
-    "noplaylist": True,
+    "extractflat": "in_playlist",  # Tối ưu tốc độ lấy Playlist SoundCloud
+    "noplaylist": False,  # Bật đọc Playlist
     "quiet": True,
 }
 
@@ -72,15 +72,24 @@ def check_queue_and_play(ctx):
     return
 
   try:
-    source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
+    loop = asyncio.get_event_loop()
+    # Nếu link chưa bóc tách stream direct (dạng link playlist), bóc tách lại
+    if not song["stream_url"].startswith("http") or "soundcloud.com" in song["stream_url"]:
+      real_data = ytdl.extract_info(song["stream_url"], download=False)
+      stream_target = real_data["url"]
+    else:
+      stream_target = song["stream_url"]
+
+    source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
     ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
     asyncio.run_coroutine_threadsafe(
         ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**"), bot.loop
     )
   except Exception as e:
     asyncio.run_coroutine_threadsafe(
-        ctx.send(f"⚠️ **Lỗi khi phát nhạc (FFmpeg):** `{e}`"), bot.loop
+        ctx.send(f"⚠️ **Lỗi khi chuyển bài:** `{e}`"), bot.loop
     )
+    check_queue_and_play(ctx)
 
 
 # ================= 4. LỆNH HELP (!Yhelps) =================
@@ -94,10 +103,10 @@ async def custom_help(ctx):
       color=discord.Color.from_rgb(108, 52, 131),
   )
   embed.add_field(
-      name="🎶 **Âm Nhạc**",
+      name="🎶 **Âm Nhạc (Hỗ trợ SoundCloud & Playlist)**",
       value=(
           "`!join` - Mời bot vào voice\n"
-          "`!play [link]` - Phát nhạc\n"
+          "`!play [link/playlist]` - Phát nhạc hoặc cả Playlist\n"
           "`!pause` | `!resume` | `!skip` | `!loop` | `!queue` | `!stop`"
       ),
       inline=False,
@@ -117,7 +126,6 @@ async def join(ctx):
     return await ctx.send("❌ Bạn phải vào phòng Voice Channel trước nhé...")
 
   channel = ctx.author.voice.channel
-
   try:
     if ctx.voice_client:
       await ctx.voice_client.move_to(channel)
@@ -127,7 +135,7 @@ async def join(ctx):
   except Exception as e:
     await ctx.send(
         f"⚠️ **Không thể kết nối Voice Channel.** Lỗi: `{e}`\n*(Hãy kiểm tra xem"
-        " đã cài PyNaCl chưa)*"
+        " đã cài pynacl chưa)*"
     )
 
 
@@ -145,33 +153,70 @@ async def play(ctx, url: str):
           None, lambda: ytdl.extract_info(url, download=False)
       )
     except Exception as e:
-      return await ctx.send(f"❌ Không thể lấy thông tin bài hát: `{e}`")
+      return await ctx.send(f"❌ Không thể lấy thông tin bài hát/playlist: `{e}`")
 
-    if "entries" in data:
-      data = data["entries"][0]
-
-    song = {
-        "stream_url": data["url"],
-        "title": data.get("title", "Bài hát không tên"),
-    }
     guild_id = ctx.guild.id
     if guild_id not in queues:
       queues[guild_id] = []
 
-    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-      queues[guild_id].append(song)
-      await ctx.send(
-          f"📝 Đã thêm **{song['title']}** vào danh sách chờ"
-          f" (#{len(queues[guild_id])})."
-      )
+    # TRƯỜNG HỢP GỬI PLAYLIST
+    if "entries" in data and len(data["entries"]) > 0:
+      playlist_title = data.get("title", "Playlist")
+      added_count = 0
+
+      for entry in data["entries"]:
+        if entry:
+          song_url = entry.get("url") or entry.get("webpage_url")
+          song_title = entry.get("title", "Bài hát không tên")
+          if song_url and not song_url.startswith("http"):
+            song_url = f"https://soundcloud.com/{song_url}"
+
+          queues[guild_id].append(
+              {"stream_url": song_url, "title": song_title}
+          )
+          added_count += 1
+
+      if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
+        first_song = queues[guild_id].pop(0)
+        ctx.voice_client.current_song = first_song
+
+        real_data = await loop.run_in_executor(
+            None,
+            lambda: ytdl.extract_info(
+                first_song["stream_url"], download=False
+            ),
+        )
+        source = discord.FFmpegPCMAudio(real_data["url"], **FFMPEG_OPTIONS)
+        ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+
+        await ctx.send(
+            f"🎶 Đã thêm **{added_count}** bài từ playlist"
+            f" **{playlist_title}**.\n☕ Đang phát: **{first_song['title']}**"
+        )
+      else:
+        await ctx.send(
+            f"📝 Đã thêm **{added_count}** bài hát từ playlist"
+            f" **{playlist_title}** vào hàng đợi."
+        )
+
+    # TRƯỜNG HỢP BÀI HÁT ĐƠN LẺ
     else:
-      ctx.voice_client.current_song = song
-      try:
+      song = {
+          "stream_url": data["url"],
+          "title": data.get("title", "Bài hát không tên"),
+      }
+
+      if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+        queues[guild_id].append(song)
+        await ctx.send(
+            f"📝 Đã thêm **{song['title']}** vào danh sách chờ"
+            f" (#{len(queues[guild_id])})."
+        )
+      else:
+        ctx.voice_client.current_song = song
         source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
         ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
         await ctx.send(f"☕ Đang phát: **{song['title']}**")
-      except Exception as e:
-        await ctx.send(f"⚠️ **Không thể phát nhạc (Lỗi FFmpeg/Stream):** `{e}`")
 
 
 @bot.command(name="queue")
@@ -182,6 +227,9 @@ async def show_queue(ctx):
   msg = "**📜 Danh sách bài hát chờ:**\n"
   for idx, song in enumerate(queues[guild_id], start=1):
     msg += f"`{idx}.` {song['title']}\n"
+    if idx >= 15:  # Giới hạn in 15 bài tránh tràn tin nhắn
+      msg += f"...và còn {len(queues[guild_id]) - 15} bài nữa."
+      break
   await ctx.send(msg)
 
 
@@ -214,7 +262,7 @@ async def loop(ctx):
   guild_id = ctx.guild.id
   current = loop_status.get(guild_id, False)
   loop_status[guild_id] = not current
-  await ctx.send(f"Lặp lại: **{'Bật' if not current else 'Tắt'}**.")
+  await ctx.send(f"Lặp lại bài hiện tại: **{'Bật' if not current else 'Tắt'}**.")
 
 
 @bot.command(name="stop")
@@ -239,10 +287,7 @@ async def ai_chat(ctx, *, prompt: str):
         " 'mình' hoặc 'Yuri', gọi người dùng là 'bạn'."
     )
 
-    candidate_models = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-    ]
+    candidate_models = ["gemini-2.5-flash", "gemini-1.5-flash"]
     response = None
     last_error = None
 
@@ -275,7 +320,7 @@ async def ai_chat(ctx, *, prompt: str):
     else:
       await ctx.send(
           f"💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
-          f" thể trả lời ngay được...\n`Chi tiết lỗi: {last_error}`"
+          f" thể trả lời ngay được...\n`Chi tiết: {last_error}`"
       )
 
 
