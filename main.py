@@ -43,8 +43,8 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # ================= 3. CẤU HÌNH PHÁT NHẠC (HỖ TRỢ PLAYLIST) =================
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
-    "extractflat": "in_playlist",  # Tối ưu tốc độ lấy Playlist SoundCloud
-    "noplaylist": False,  # Bật đọc Playlist
+    "extractflat": "in_playlist",  # Tối ưu tốc độ quét Playlist
+    "noplaylist": False,  # Bật tính năng nhận diện Playlist
     "quiet": True,
 }
 
@@ -62,7 +62,9 @@ loop_status = {}
 
 def check_queue_and_play(ctx):
   guild_id = ctx.guild.id
-  if loop_status.get(guild_id, False) and hasattr(ctx.voice_client, "current_song"):
+  if loop_status.get(guild_id, False) and hasattr(
+      ctx.voice_client, "current_song"
+  ):
     song = ctx.voice_client.current_song
   elif guild_id in queues and len(queues[guild_id]) > 0:
     song = queues[guild_id].pop(0)
@@ -71,25 +73,28 @@ def check_queue_and_play(ctx):
     ctx.voice_client.current_song = None
     return
 
-  try:
-    loop = asyncio.get_event_loop()
-    # Nếu link chưa bóc tách stream direct (dạng link playlist), bóc tách lại
-    if not song["stream_url"].startswith("http") or "soundcloud.com" in song["stream_url"]:
-      real_data = ytdl.extract_info(song["stream_url"], download=False)
-      stream_target = real_data["url"]
-    else:
-      stream_target = song["stream_url"]
+  async def play_async():
+    try:
+      # Bóc tách link stream thực tế trên Event Loop chính
+      if not song["stream_url"].startswith("http") or "soundcloud.com" in song[
+          "stream_url"
+      ]:
+        real_data = await bot.loop.run_in_executor(
+            None, lambda: ytdl.extract_info(song["stream_url"], download=False)
+        )
+        stream_target = real_data["url"]
+      else:
+        stream_target = song["stream_url"]
 
-    source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
-    ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-    asyncio.run_coroutine_threadsafe(
-        ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**"), bot.loop
-    )
-  except Exception as e:
-    asyncio.run_coroutine_threadsafe(
-        ctx.send(f"⚠️ **Lỗi khi chuyển bài:** `{e}`"), bot.loop
-    )
-    check_queue_and_play(ctx)
+      source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
+      ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+      await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
+    except Exception as e:
+      await ctx.send(f"⚠️ **Lỗi khi chuyển bài:** `{e}`")
+      check_queue_and_play(ctx)
+
+  # Chuyển execution về Event Loop của Bot
+  asyncio.run_coroutine_threadsafe(play_async(), bot.loop)
 
 
 # ================= 4. LỆNH HELP (!Yhelps) =================
@@ -147,13 +152,14 @@ async def play(ctx, url: str):
       return
 
   async with ctx.typing():
-    loop = asyncio.get_event_loop()
     try:
-      data = await loop.run_in_executor(
+      data = await bot.loop.run_in_executor(
           None, lambda: ytdl.extract_info(url, download=False)
       )
     except Exception as e:
-      return await ctx.send(f"❌ Không thể lấy thông tin bài hát/playlist: `{e}`")
+      return await ctx.send(
+          f"❌ Không thể lấy thông tin bài hát/playlist: `{e}`"
+      )
 
     guild_id = ctx.guild.id
     if guild_id not in queues:
@@ -180,7 +186,7 @@ async def play(ctx, url: str):
         first_song = queues[guild_id].pop(0)
         ctx.voice_client.current_song = first_song
 
-        real_data = await loop.run_in_executor(
+        real_data = await bot.loop.run_in_executor(
             None,
             lambda: ytdl.extract_info(
                 first_song["stream_url"], download=False
@@ -227,7 +233,7 @@ async def show_queue(ctx):
   msg = "**📜 Danh sách bài hát chờ:**\n"
   for idx, song in enumerate(queues[guild_id], start=1):
     msg += f"`{idx}.` {song['title']}\n"
-    if idx >= 15:  # Giới hạn in 15 bài tránh tràn tin nhắn
+    if idx >= 15:
       msg += f"...và còn {len(queues[guild_id]) - 15} bài nữa."
       break
   await ctx.send(msg)
@@ -291,12 +297,11 @@ async def ai_chat(ctx, *, prompt: str):
     response = None
     last_error = None
 
-    loop = asyncio.get_event_loop()
     config = types.GenerateContentConfig(system_instruction=system_instruction)
 
     for model_name in candidate_models:
       try:
-        response = await loop.run_in_executor(
+        response = await bot.loop.run_in_executor(
             None,
             lambda m=model_name: ai_client.models.generate_content(
                 model=m, contents=prompt, config=config
