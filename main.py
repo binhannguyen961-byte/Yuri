@@ -38,7 +38,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ================= 3. CẤU HÌNH NHẠC =================
+# ================= 3. CẤU HÌNH PHÁT NHẠC =================
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "extractflat": False,
@@ -87,7 +87,7 @@ async def custom_help(ctx):
       color=discord.Color.from_rgb(108, 52, 131),
   )
   embed.add_field(
-      name="🎶 **Âm Nhạc (SoundCloud)**",
+      name="🎶 **Âm Nhạc**",
       value=(
           "`!join` - Mời bot vào voice\n"
           "`!play [link]` - Phát nhạc\n"
@@ -97,13 +97,13 @@ async def custom_help(ctx):
   )
   embed.add_field(
       name="🔮 **Trò Chuyện AI**",
-      value="`!ai [nội dung]` - Trò chuyện với Yuri",
+      value="`!ai [nội dung]` - Trò chuyện với Yuri (Gemini 3.6 Flash)",
       inline=False,
   )
   await ctx.send(embed=embed)
 
 
-# ================= 5. LỆNH NHẠC =================
+# ================= 5. CÁC LỆNH PHÁT NHẠC =================
 @bot.command(name="join")
 async def join(ctx):
   if not ctx.author.voice:
@@ -211,7 +211,7 @@ async def stop(ctx):
     await ctx.send("⏹️ Đã dừng phát và rời phòng.")
 
 
-# ================= 6. LỆNH AI DÙNG MODEL MỚI (FIXED 404) =================
+# ================= 6. LỆNH AI GEMINI 3.6 FLASH =================
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str):
   async with ctx.typing():
@@ -221,8 +221,12 @@ async def ai_chat(ctx, *, prompt: str):
         " 'mình' hoặc 'Yuri', gọi người dùng là 'bạn'."
     )
 
-    # Danh sách các tên model khả dụng chuẩn nhất của Gemini
-    candidate_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    # Ưu tiên gemini-3.6-flash, nếu lỗi tự động xuống bản 3.5 và 2.5
+    candidate_models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+    ]
     response = None
     last_error = None
 
@@ -256,14 +260,14 @@ async def ai_chat(ctx, *, prompt: str):
     else:
       await ctx.send(
           f"💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
-          f" thể trả lời ngay được..."
+          f" thể trả lời ngay được...\n`Chi tiết: {last_error}`"
       )
 
 
-# ================= 7. CHẠY BOT =================
+# ================= 7. KHI BOT SẴN SÀNG =================
 @bot.event
 async def on_ready():
-  print(f"✅ Bot online: {bot.user.name}")
+  print(f"✅ Bot Yuri đã hoạt động: {bot.user.name}")
 
 
 if __name__ == "__main__":
