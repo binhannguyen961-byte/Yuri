@@ -2,3 +2,4 @@ discord.py>=2.3.2
 yt-dlp>=2024.03.10
 google-genai>=0.1.1
 PyNaCl>=1.5.0
+Flask>=3.0.0
