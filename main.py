@@ -67,7 +67,6 @@ async def auto_stop_after_timeout(ctx, delay=300):
   guild_id = ctx.guild.id
 
   if ctx.voice_client:
-    # Kiểm tra lại số người dùng trong phòng voice
     members = [m for m in ctx.voice_client.channel.members if not m.bot]
     if len(members) == 0:
       if guild_id in queues:
@@ -81,7 +80,6 @@ async def auto_stop_after_timeout(ctx, delay=300):
           " phòng và dừng phát nhạc nhé...**"
       )
 
-  # Xóa task sau khi hoàn thành
   if guild_id in auto_disconnect_tasks:
     del auto_disconnect_tasks[guild_id]
 
@@ -94,7 +92,6 @@ def check_queue_and_play(ctx):
     members = [m for m in ctx.voice_client.channel.members if not m.bot]
 
     if len(members) == 0:
-      # Nếu phòng trống và chưa có lịch đếm ngược 5 phút -> Kích hoạt bộ đếm
       if guild_id not in auto_disconnect_tasks:
         asyncio.run_coroutine_threadsafe(
             ctx.send(
@@ -109,7 +106,6 @@ def check_queue_and_play(ctx):
         auto_disconnect_tasks[guild_id] = task
       return
     else:
-      # Nếu có người trong phòng voice -> Hủy bộ đếm ngược (nếu đang chạy)
       if guild_id in auto_disconnect_tasks:
         auto_disconnect_tasks[guild_id].cancel()
         del auto_disconnect_tasks[guild_id]
@@ -158,14 +154,12 @@ async def on_voice_state_update(member, before, after):
   if member.bot:
     return
 
-  # Kiểm tra phòng voice mà bot đang tham gia
   for voice_client in bot.voice_clients:
     guild_id = voice_client.guild.id
     channel = voice_client.channel
     members = [m for m in channel.members if not m.bot]
 
     if len(members) == 0:
-      # Khi người cuối cùng rời phòng -> Đặt đếm ngược 5 phút rời phòng
       if guild_id not in auto_disconnect_tasks:
         task = asyncio.create_task(
             auto_stop_after_timeout(
@@ -180,7 +174,6 @@ async def on_voice_state_update(member, before, after):
         )
         auto_disconnect_tasks[guild_id] = task
     else:
-      # Khi có người vào lại phòng -> Hủy đếm ngược
       if guild_id in auto_disconnect_tasks:
         auto_disconnect_tasks[guild_id].cancel()
         del auto_disconnect_tasks[guild_id]
@@ -207,7 +200,7 @@ async def custom_help(ctx):
   )
   embed.add_field(
       name="🔮 **Trò Chuyện AI**",
-      value="`!ai [nội dung]` - Trò chuyện với Yuri",
+      value="`!ai [nội dung]` - Trò chuyện với Yuri (Gemini 3.6 Flash)",
       inline=False,
   )
   await ctx.send(embed=embed)
@@ -320,7 +313,7 @@ async def show_queue(ctx):
   msg = "**📜 Danh sách bài hát chờ:**\n"
   for idx, song in enumerate(queues[guild_id], start=1):
     msg += f"`{idx}.` {song['title']}\n"
-    if idx >= 25:  # Đã nâng giới hạn lên 25 bài
+    if idx >= 25:
       msg += f"...và còn {len(queues[guild_id]) - 25} bài nữa."
       break
   await ctx.send(msg)
@@ -365,7 +358,6 @@ async def stop(ctx):
     queues[guild_id].clear()
   loop_status[guild_id] = False
 
-  # Hủy bộ đếm ngắt tự động nếu người dùng nhập !stop chủ động
   if guild_id in auto_disconnect_tasks:
     auto_disconnect_tasks[guild_id].cancel()
     del auto_disconnect_tasks[guild_id]
@@ -376,7 +368,7 @@ async def stop(ctx):
     await ctx.send("⏹️ Đã dừng phát và rời phòng.")
 
 
-# ================= 7. LỆNH AI GEMINI =================
+# ================= 7. LỆNH AI GEMINI (CỐ ĐỊNH 3.6 FLASH) =================
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str):
   async with ctx.typing():
@@ -386,39 +378,34 @@ async def ai_chat(ctx, *, prompt: str):
         " 'mình' hoặc 'Yuri', gọi người dùng là 'bạn'."
     )
 
-    candidate_models = ["gemini-2.5-flash", "gemini-1.5-flash"]
-    response = None
-    last_error = None
-
     config = types.GenerateContentConfig(system_instruction=system_instruction)
 
-    for model_name in candidate_models:
-      try:
-        response = await bot.loop.run_in_executor(
-            None,
-            lambda m=model_name: ai_client.models.generate_content(
-                model=m, contents=prompt, config=config
-            ),
-        )
-        if response and hasattr(response, "text") and response.text:
-          break
-      except Exception as e:
-        last_error = e
-        continue
+    try:
+      response = await bot.loop.run_in_executor(
+          None,
+          lambda: ai_client.models.generate_content(
+              model="gemini-3.6-flash", contents=prompt, config=config
+          ),
+      )
 
-    if response and hasattr(response, "text") and response.text:
-      reply_text = response.text
-      if len(reply_text) > 1900:
-        for chunk in [
-            reply_text[i : i + 1900] for i in range(0, len(reply_text), 1900)
-        ]:
-          await ctx.send(chunk)
+      if response and hasattr(response, "text") and response.text:
+        reply_text = response.text
+        if len(reply_text) > 1900:
+          for chunk in [
+              reply_text[i : i + 1900] for i in range(0, len(reply_text), 1900)
+          ]:
+            await ctx.send(chunk)
+        else:
+          await ctx.send(reply_text)
       else:
-        await ctx.send(reply_text)
-    else:
+        await ctx.send(
+            "💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
+            " thể trả lời ngay được..."
+        )
+
+    except Exception as e:
       await ctx.send(
-          f"💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
-          f" thể trả lời ngay được...\n`Chi tiết: {last_error}`"
+          f"💬 X-Xin lỗi bạn... Có lỗi xảy ra khi gọi AI:\n`Chi tiết: {e}`"
       )
 
 
