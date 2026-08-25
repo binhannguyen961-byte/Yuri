@@ -36,6 +36,8 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True  # Bắt buộc bật Voice States Intent trong Discord Developer Portal
+
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ================= 3. CẤU HÌNH PHÁT NHẠC =================
@@ -69,11 +71,16 @@ def check_queue_and_play(ctx):
     ctx.voice_client.current_song = None
     return
 
-  source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
-  ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-  asyncio.run_coroutine_threadsafe(
-      ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**"), bot.loop
-  )
+  try:
+    source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
+    ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+    asyncio.run_coroutine_threadsafe(
+        ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**"), bot.loop
+    )
+  except Exception as e:
+    asyncio.run_coroutine_threadsafe(
+        ctx.send(f"⚠️ **Lỗi khi phát nhạc (FFmpeg):** `{e}`"), bot.loop
+    )
 
 
 # ================= 4. LỆNH HELP (!Yhelps) =================
@@ -97,7 +104,7 @@ async def custom_help(ctx):
   )
   embed.add_field(
       name="🔮 **Trò Chuyện AI**",
-      value="`!ai [nội dung]` - Trò chuyện với Yuri (Gemini 3.6 Flash)",
+      value="`!ai [nội dung]` - Trò chuyện với Yuri",
       inline=False,
   )
   await ctx.send(embed=embed)
@@ -108,12 +115,20 @@ async def custom_help(ctx):
 async def join(ctx):
   if not ctx.author.voice:
     return await ctx.send("❌ Bạn phải vào phòng Voice Channel trước nhé...")
+
   channel = ctx.author.voice.channel
-  if ctx.voice_client:
-    await ctx.voice_client.move_to(channel)
-  else:
-    await ctx.voice_client.connect()
-  await ctx.send(f"☕ Yuri đã vào **{channel.name}**...")
+
+  try:
+    if ctx.voice_client:
+      await ctx.voice_client.move_to(channel)
+    else:
+      await channel.connect()
+    await ctx.send(f"☕ Yuri đã vào **{channel.name}**...")
+  except Exception as e:
+    await ctx.send(
+        f"⚠️ **Không thể kết nối Voice Channel.** Lỗi: `{e}`\n*(Hãy kiểm tra xem"
+        " đã cài PyNaCl chưa)*"
+    )
 
 
 @bot.command(name="play")
@@ -130,7 +145,7 @@ async def play(ctx, url: str):
           None, lambda: ytdl.extract_info(url, download=False)
       )
     except Exception as e:
-      return await ctx.send(f"❌ Không thể tải nhạc: {e}")
+      return await ctx.send(f"❌ Không thể lấy thông tin bài hát: `{e}`")
 
     if "entries" in data:
       data = data["entries"][0]
@@ -151,9 +166,12 @@ async def play(ctx, url: str):
       )
     else:
       ctx.voice_client.current_song = song
-      source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
-      ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-      await ctx.send(f"☕ Đang phát: **{song['title']}**")
+      try:
+        source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
+        ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+        await ctx.send(f"☕ Đang phát: **{song['title']}**")
+      except Exception as e:
+        await ctx.send(f"⚠️ **Không thể phát nhạc (Lỗi FFmpeg/Stream):** `{e}`")
 
 
 @bot.command(name="queue")
@@ -188,7 +206,7 @@ async def pause(ctx):
 async def resume(ctx):
   if ctx.voice_client and ctx.voice_client.is_paused():
     ctx.voice_client.resume()
-    await ctx.send("▶️ Đã tiếp tục.")
+    await ctx.send("▶️ Tiếp tục phát nhạc.")
 
 
 @bot.command(name="loop")
@@ -211,7 +229,7 @@ async def stop(ctx):
     await ctx.send("⏹️ Đã dừng phát và rời phòng.")
 
 
-# ================= 6. LỆNH AI GEMINI 3.6 FLASH =================
+# ================= 6. LỆNH AI GEMINI =================
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str):
   async with ctx.typing():
@@ -221,11 +239,9 @@ async def ai_chat(ctx, *, prompt: str):
         " 'mình' hoặc 'Yuri', gọi người dùng là 'bạn'."
     )
 
-    # Ưu tiên gemini-3.6-flash, nếu lỗi tự động xuống bản 3.5 và 2.5
     candidate_models = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
         "gemini-2.5-flash",
+        "gemini-1.5-flash",
     ]
     response = None
     last_error = None
@@ -245,7 +261,6 @@ async def ai_chat(ctx, *, prompt: str):
           break
       except Exception as e:
         last_error = e
-        print(f"Lỗi thử model {model_name}: {e}")
         continue
 
     if response and hasattr(response, "text") and response.text:
@@ -260,7 +275,7 @@ async def ai_chat(ctx, *, prompt: str):
     else:
       await ctx.send(
           f"💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
-          f" thể trả lời ngay được...\n`Chi tiết: {last_error}`"
+          f" thể trả lời ngay được...\n`Chi tiết lỗi: {last_error}`"
       )
 
 
