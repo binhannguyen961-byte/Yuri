@@ -78,7 +78,7 @@ def check_queue_and_play(ctx):
 # ================= 4. LỆNH HƯỚNG DẪN (HELP) =================
 
 
-@bot.command(name="help")
+@bot.command(name="Yhelps")
 async def custom_help(ctx):
     """Hiển thị bảng danh sách các lệnh của Bot Yuri"""
     embed = discord.Embed(
