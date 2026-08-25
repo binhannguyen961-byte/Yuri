@@ -40,11 +40,11 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ================= 3. CẤU HÌNH PHÁT NHẠC (HỖ TRỢ PLAYLIST) =================
+# ================= 3. CẤU HÌNH PHÁT NHẠC & QUẢN LÝ VOICE =================
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
-    "extractflat": "in_playlist",  # Tối ưu tốc độ quét Playlist
-    "noplaylist": False,  # Bật tính năng nhận diện Playlist
+    "extractflat": "in_playlist",
+    "noplaylist": False,
     "quiet": True,
 }
 
@@ -58,10 +58,63 @@ FFMPEG_OPTIONS = {
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 queues = {}
 loop_status = {}
+auto_disconnect_tasks = {}  # Lưu trữ bộ đếm thời gian 5 phút cho mỗi Guild
+
+
+async def auto_stop_after_timeout(ctx, delay=300):
+  """Hàm chờ 5 phút (300 giây) để ngắt voice nếu phòng trống"""
+  await asyncio.sleep(delay)
+  guild_id = ctx.guild.id
+
+  if ctx.voice_client:
+    # Kiểm tra lại số người dùng trong phòng voice
+    members = [m for m in ctx.voice_client.channel.members if not m.bot]
+    if len(members) == 0:
+      if guild_id in queues:
+        queues[guild_id].clear()
+      loop_status[guild_id] = False
+      if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+        ctx.voice_client.stop()
+      await ctx.voice_client.disconnect()
+      await ctx.send(
+          "⌛ **Không có ai trong phòng voice quá 5 phút, Yuri xin phép rời"
+          " phòng và dừng phát nhạc nhé...**"
+      )
+
+  # Xóa task sau khi hoàn thành
+  if guild_id in auto_disconnect_tasks:
+    del auto_disconnect_tasks[guild_id]
 
 
 def check_queue_and_play(ctx):
   guild_id = ctx.guild.id
+
+  # 1. KIỂM TRA SỐ LƯỢNG THÀNH VIÊN TRONG VOICE
+  if ctx.voice_client and ctx.voice_client.channel:
+    members = [m for m in ctx.voice_client.channel.members if not m.bot]
+
+    if len(members) == 0:
+      # Nếu phòng trống và chưa có lịch đếm ngược 5 phút -> Kích hoạt bộ đếm
+      if guild_id not in auto_disconnect_tasks:
+        asyncio.run_coroutine_threadsafe(
+            ctx.send(
+                "😴 Không có ai trong phòng voice... Yuri sẽ tạm ngưng và tự"
+                " rời phòng sau **5 phút** nếu không có ai quay lại."
+            ),
+            bot.loop,
+        )
+        task = asyncio.run_coroutine_threadsafe(
+            auto_stop_after_timeout(ctx, 300), bot.loop
+        )
+        auto_disconnect_tasks[guild_id] = task
+      return
+    else:
+      # Nếu có người trong phòng voice -> Hủy bộ đếm ngược (nếu đang chạy)
+      if guild_id in auto_disconnect_tasks:
+        auto_disconnect_tasks[guild_id].cancel()
+        del auto_disconnect_tasks[guild_id]
+
+  # 2. XỬ LÝ PHÁT NHẠC
   if loop_status.get(guild_id, False) and hasattr(
       ctx.voice_client, "current_song"
   ):
@@ -75,7 +128,6 @@ def check_queue_and_play(ctx):
 
   async def play_async():
     try:
-      # Bóc tách link stream thực tế trên Event Loop chính
       if not song["stream_url"].startswith("http") or "soundcloud.com" in song[
           "stream_url"
       ]:
@@ -90,14 +142,51 @@ def check_queue_and_play(ctx):
       ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
       await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
     except Exception as e:
-      await ctx.send(f"⚠️ **Lỗi khi chuyển bài:** `{e}`")
+      await ctx.send(
+          f"⚠️ **Không thể tải bài {song.get('title', '')}, đang chuyển bài"
+          " tiếp...**"
+      )
       check_queue_and_play(ctx)
 
-  # Chuyển execution về Event Loop của Bot
   asyncio.run_coroutine_threadsafe(play_async(), bot.loop)
 
 
-# ================= 4. LỆNH HELP (!Yhelps) =================
+# ================= 4. EVENT THEO DÕI VOICE STATE =================
+@bot.event
+async def on_voice_state_update(member, before, after):
+  """Hủy hoặc khởi tạo đếm ngược khi người dùng ra/vào phòng voice"""
+  if member.bot:
+    return
+
+  # Kiểm tra phòng voice mà bot đang tham gia
+  for voice_client in bot.voice_clients:
+    guild_id = voice_client.guild.id
+    channel = voice_client.channel
+    members = [m for m in channel.members if not m.bot]
+
+    if len(members) == 0:
+      # Khi người cuối cùng rời phòng -> Đặt đếm ngược 5 phút rời phòng
+      if guild_id not in auto_disconnect_tasks:
+        task = asyncio.create_task(
+            auto_stop_after_timeout(
+                await bot.get_context(
+                    await channel.send(
+                        "😴 Mọi người đã rời phòng voice. Yuri sẽ tự ngắt"
+                        " kết nối sau **5 phút**..."
+                    )
+                ),
+                300,
+            )
+        )
+        auto_disconnect_tasks[guild_id] = task
+    else:
+      # Khi có người vào lại phòng -> Hủy đếm ngược
+      if guild_id in auto_disconnect_tasks:
+        auto_disconnect_tasks[guild_id].cancel()
+        del auto_disconnect_tasks[guild_id]
+
+
+# ================= 5. LỆNH HELP (!Yhelps) =================
 @bot.command(name="Yhelps")
 async def custom_help(ctx):
   embed = discord.Embed(
@@ -124,7 +213,7 @@ async def custom_help(ctx):
   await ctx.send(embed=embed)
 
 
-# ================= 5. CÁC LỆNH PHÁT NHẠC =================
+# ================= 6. CÁC LỆNH PHÁT NHẠC =================
 @bot.command(name="join")
 async def join(ctx):
   if not ctx.author.voice:
@@ -165,7 +254,6 @@ async def play(ctx, url: str):
     if guild_id not in queues:
       queues[guild_id] = []
 
-    # TRƯỜNG HỢP GỬI PLAYLIST
     if "entries" in data and len(data["entries"]) > 0:
       playlist_title = data.get("title", "Playlist")
       added_count = 0
@@ -205,7 +293,6 @@ async def play(ctx, url: str):
             f" **{playlist_title}** vào hàng đợi."
         )
 
-    # TRƯỜNG HỢP BÀI HÁT ĐƠN LẺ
     else:
       song = {
           "stream_url": data["url"],
@@ -233,8 +320,8 @@ async def show_queue(ctx):
   msg = "**📜 Danh sách bài hát chờ:**\n"
   for idx, song in enumerate(queues[guild_id], start=1):
     msg += f"`{idx}.` {song['title']}\n"
-    if idx >= 15:
-      msg += f"...và còn {len(queues[guild_id]) - 15} bài nữa."
+    if idx >= 25:  # Đã nâng giới hạn lên 25 bài
+      msg += f"...và còn {len(queues[guild_id]) - 25} bài nữa."
       break
   await ctx.send(msg)
 
@@ -277,13 +364,19 @@ async def stop(ctx):
   if guild_id in queues:
     queues[guild_id].clear()
   loop_status[guild_id] = False
+
+  # Hủy bộ đếm ngắt tự động nếu người dùng nhập !stop chủ động
+  if guild_id in auto_disconnect_tasks:
+    auto_disconnect_tasks[guild_id].cancel()
+    del auto_disconnect_tasks[guild_id]
+
   if ctx.voice_client:
     ctx.voice_client.stop()
     await ctx.voice_client.disconnect()
     await ctx.send("⏹️ Đã dừng phát và rời phòng.")
 
 
-# ================= 6. LỆNH AI GEMINI =================
+# ================= 7. LỆNH AI GEMINI =================
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str):
   async with ctx.typing():
@@ -329,7 +422,7 @@ async def ai_chat(ctx, *, prompt: str):
       )
 
 
-# ================= 7. KHI BOT SẴN SÀNG =================
+# ================= 8. KHI BOT SẴN SÀNG =================
 @bot.event
 async def on_ready():
   print(f"✅ Bot Yuri đã hoạt động: {bot.user.name}")
