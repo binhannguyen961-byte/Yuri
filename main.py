@@ -1,203 +1,260 @@
-import os
 import asyncio
-import threading
-import re
-from functools import partial
-from flask import Flask
+import os
 import discord
 from discord.ext import commands
+from google import genai
 import yt_dlp
-import requests
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
 
-# --- 1. Web Server ngầm giữ Render Online 24/7 ---
-app = Flask(__name__)
+# ================= 1. CẤU HÌNH CƠ BẢN =================
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
 
-@app.route('/')
-def home():
-    return "Yuri Music Bot is Live!"
+# Khởi tạo AI Client
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+# Khởi tạo Discord Bot (Tắt lệnh help mặc định để dùng help tùy chỉnh)
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# --- 2. Kết nối Spotify API ---
-SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID")
-SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET")
-sp = None
-if SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET:
-    try:
-        sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-            client_id=SPOTIPY_CLIENT_ID,
-            client_secret=SPOTIPY_CLIENT_SECRET
-        ))
-    except Exception:
-        pass
-
-# --- 3. Cấu hình yt-dlp & FFmpeg ---
+# ================= 2. CẤU HÌNH TẢI & PHÁT NHẠC =================
 YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'mp3',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'noplaylist': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': False,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'ytsearch',
-    'source_address': '0.0.0.0',
+    "format": "bestaudio/best",
+    "extractflat": False,
+    "noplaylist": True,
+    "quiet": True,
 }
 
 FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn",
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5):
-        super().__init__(source, volume)
-        self.data = data
-        self.title = data.get('title')
-        self.url = data.get('webpage_url') or data.get('url')
+# Quản lý hàng đợi nhạc và chế độ lặp theo Server ID
+queues = {}  # { guild_id: [ {'stream_url': ..., 'title': ...}, ... ] }
+loop_status = {}  # { guild_id: True/False }
 
-    @classmethod
-    async def from_url(cls, url, *, loop=None, stream=True):
-        loop = loop or asyncio.get_event_loop()
-        query = url
 
-        # Xử lý SoundCloud rút gọn
-        if "on.soundcloud.com" in url:
-            try:
-                res = await loop.run_in_executor(None, lambda: requests.get(url, allow_redirects=True, timeout=5))
-                query = res.url
-            except Exception:
-                query = url
-
-        # Xử lý Spotify (chuyển thành query tìm kiếm YouTube để tránh lỗi DRM)
-        if "spotify.com/track/" in url and sp:
-            try:
-                track_info = await loop.run_in_executor(None, lambda: sp.track(url))
-                query = f"ytsearch:{track_info['name']} {track_info['artists'][0]['name']}"
-            except Exception:
-                pass
-
-        to_run = partial(ytdl.extract_info, query, download=not stream)
-        data = await loop.run_in_executor(None, to_run)
-
-        if 'entries' in data:
-            data = data['entries'][0]
-
-        filename = data['url'] if stream else ytdl.prepare_filename(data)
-        return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
-
-# --- 4. Quản lý trạng thái Phát nhạc & Hàng đợi ---
-music_queues = {}
-loop_states = {}
-current_songs = {}
-
-def get_queue(ctx):
-    if ctx.guild.id not in music_queues:
-        music_queues[ctx.guild.id] = []
-    return music_queues[ctx.guild.id]
-
-# --- 5. Discord Bot Yuri ---
-yuri_bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
-
-def play_next(ctx):
+def check_queue_and_play(ctx):
+    """Hàm bổ trợ xử lý phát bài tiếp theo trong hàng đợi hoặc lặp lại"""
     guild_id = ctx.guild.id
-    is_looping = loop_states.get(guild_id, False)
-    queue = get_queue(ctx)
 
-    # 1. Nếu bật Loop: phát lại chính bài đang lưu
-    if is_looping and guild_id in current_songs:
-        url, title = current_songs[guild_id]
-        asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
+    # 1. Nếu bật loop, phát lại bài hiện tại
+    if loop_status.get(guild_id, False) and hasattr(ctx.voice_client, "current_song"):
+        song = ctx.voice_client.current_song
+    # 2. Nếu trong hàng đợi có bài hát, lấy bài đầu tiên ra phát
+    elif guild_id in queues and len(queues[guild_id]) > 0:
+        song = queues[guild_id].pop(0)
+        ctx.voice_client.current_song = song
+    # 3. Nếu hết bài thì dừng
+    else:
+        ctx.voice_client.current_song = None
         return
 
-    # 2. Nếu có bài tiếp theo trong Queue
-    if len(queue) > 0:
-        url, title = queue.pop(0)
-        asyncio.run_coroutine_threadsafe(play_song(ctx, url, title), yuri_bot.loop)
-        return
-    
-    # 3. Hết hàng chờ và không bật loop -> Xóa bài hiện tại
-    if guild_id in current_songs:
-        del current_songs[guild_id]
+    source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
+    ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+    asyncio.run_coroutine_threadsafe(
+        ctx.send(f"🎶 Đang phát: **{song['title']}**"), bot.loop
+    )
 
-async def play_song(ctx, url, title):
-    async with ctx.typing():
-        try:
-            player = await YTDLSource.from_url(url, loop=yuri_bot.loop, stream=True)
-            current_songs[ctx.guild.id] = (url, player.title)
-            ctx.voice_client.play(player, after=lambda e: play_next(ctx))
-            await ctx.send(f"*mỉm cười e ấp* Đang phát nhạc cho cậu: **{player.title}** 🎶")
-        except Exception as e:
-            await ctx.send(f"*bối rối* Tôi gặp chút lỗi khi phát bài này: {str(e)}")
-            play_next(ctx)
 
-@yuri_bot.event
-async def on_ready():
-    print(f"-> Yuri Online: {yuri_bot.user}")
-    await yuri_bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="nhạc cùng cậu... 🎧"))
+# ================= 3. LỆNH HƯỚNG DẪN (HELP) =================
 
-@yuri_bot.command(name='play', aliases=['p'])
-async def play(ctx, *, url):
+
+@bot.command(name="help")
+async def custom_help(ctx):
+    """Hiển thị bảng danh sách các lệnh của Bot Yuri"""
+    embed = discord.Embed(
+        title="✨ Trợ lý & Phát nhạc Yuri - Bảng Lệnh ✨",
+        description="Dưới đây là danh sách các lệnh bạn có thể sử dụng với Yuri:",
+        color=discord.Color.purple(),
+    )
+
+    embed.add_field(
+        name="🎵 **Âm Nhạc (SoundCloud)**",
+        value=(
+            "`!join` - Mời Yuri vào kênh thoại của bạn.\n"
+            "`!play [link]` - Phát nhạc từ SoundCloud (hoặc thêm vào hàng đợi).\n"
+            "`!pause` - Tạm dừng phát nhạc.\n"
+            "`!resume` - Tiếp tục phát nhạc.\n"
+            "`!skip` - Bỏ qua bài hát hiện tại để sang bài tiếp theo.\n"
+            "`!loop` - Bật/tắt chế độ lặp lại bài hát hiện tại.\n"
+            "`!queue` - Xem danh sách các bài hát đang chờ trong hàng đợi.\n"
+            "`!stop` - Dừng phát nhạc, xóa hàng đợi và mời Yuri rời kênh thoại."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🤖 **Trí Tuệ Nhân Tạo (AI)**",
+        value="`!ai [câu hỏi]` - Trò chuyện hoặc hỏi bất kỳ điều gì với Yuri.",
+        inline=False,
+    )
+
+    embed.set_footer(text="Dùng tiền tố ! trước mỗi lệnh. Chúc bạn có trải nghiệm nghe nhạc vui vẻ!")
+
+    await ctx.send(embed=embed)
+
+
+# ================= 4. CÁC LỆNH ĐIỀU KHIỂN NHẠC =================
+
+
+@bot.command(name="join")
+async def join(ctx):
+    """Cho bot vào Voice Channel"""
     if not ctx.author.voice:
-        await ctx.send("*ngập ngừng* Cậu cần vào một kênh thoại trước đã...")
-        return
-    if ctx.voice_client is None:
-        await ctx.author.voice.channel.connect()
-
-    queue = get_queue(ctx)
-    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-        queue.append((url, url))
-        await ctx.send("*cúi đầu* Đã thêm bài hát vào danh sách chờ cho cậu 🎵")
+        return await ctx.send("❌ Bạn phải vào một Voice Channel trước!")
+    channel = ctx.author.voice.channel
+    if ctx.voice_client:
+        await ctx.voice_client.move_to(channel)
     else:
-        await play_song(ctx, url, url)
+        await ctx.voice_client.connect()
+    await ctx.send(f"🔊 Yuri đã kết nối tới **{channel.name}**")
 
-@yuri_bot.command(name='loop', aliases=['l'])
-async def loop(ctx):
+
+@bot.command(name="play")
+async def play(ctx, url: str):
+    """Phát nhạc từ link SoundCloud hoặc thêm vào hàng đợi (Queue)"""
+    if not ctx.voice_client:
+        await ctx.invoke(join)
+        if not ctx.voice_client:
+            return
+
+    async with ctx.typing():
+        loop = asyncio.get_event_loop()
+        try:
+            data = await loop.run_in_executor(
+                None, lambda: ytdl.extract_info(url, download=False)
+            )
+        except Exception:
+            return await ctx.send("❌ Không thể lấy dữ liệu từ link SoundCloud này!")
+
+        if "entries" in data:
+            data = data["entries"][0]
+
+        song = {
+            "stream_url": data["url"],
+            "title": data.get("title", "Bài hát không tên"),
+        }
+
+        guild_id = ctx.guild.id
+        if guild_id not in queues:
+            queues[guild_id] = []
+
+        # Nếu bot đang phát bài khác, thêm vào hàng đợi (Queue)
+        if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+            queues[guild_id].append(song)
+            await ctx.send(
+                f"➕ Đã thêm vào hàng đợi: **{song['title']}** (Vị trí #{len(queues[guild_id])})"
+            )
+        else:
+            # Phát ngay bài mới
+            ctx.voice_client.current_song = song
+            source = discord.FFmpegPCMAudio(song["stream_url"], **FFMPEG_OPTIONS)
+            ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
+            await ctx.send(f"🎶 Đang phát: **{song['title']}**")
+
+
+@bot.command(name="queue")
+async def show_queue(ctx):
+    """Xem danh sách bài hát đang chờ trong Queue"""
     guild_id = ctx.guild.id
-    current_state = loop_states.get(guild_id, False)
-    loop_states[guild_id] = not current_state
+    if guild_id not in queues or len(queues[guild_id]) == 0:
+        return await ctx.send("📜 Hàng đợi hiện đang trống!")
 
-    if loop_states[guild_id]:
-        await ctx.send("*đỏ mặt* Đã bật chế độ **lặp lại** bài hát này cho cậu 🔁")
-    else:
-        await ctx.send("*nhìn cậu* Đã tắt chế độ lặp lại ➡️")
+    msg = "**📜 Danh sách chờ phát nhạc:**\n"
+    for idx, song in enumerate(queues[guild_id], start=1):
+        msg += f"`{idx}.` {song['title']}\n"
 
-@yuri_bot.command(name='skip', aliases=['s'])
+    await ctx.send(msg)
+
+
+@bot.command(name="skip")
 async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        # Tắt tạm loop của bài hiện tại để có thể skip sang bài kế tiếp
-        loop_states[ctx.guild.id] = False
+    """Bỏ qua bài hát hiện tại"""
+    if ctx.voice_client and (
+        ctx.voice_client.is_playing() or ctx.voice_client.is_paused()
+    ):
+        # Tắt chế độ loop nếu người dùng muốn skip bài đang lặp
+        loop_status[ctx.guild.id] = False
         ctx.voice_client.stop()
-        await ctx.send("*khẽ gật đầu* Tôi đã bỏ qua bài hát hiện tại...")
+        await ctx.send("⏭️ Đã bỏ qua bài hát hiện tại!")
     else:
-        await ctx.send("*bối rối* Hiện tại không có bài nào đang phát cả...")
+        await ctx.send("❌ Hiện không có bài hát nào đang phát.")
 
-@yuri_bot.command(name='stop', aliases=['leave'])
-async def stop(ctx):
+
+@bot.command(name="pause")
+async def pause(ctx):
+    """Tạm dừng phát nhạc"""
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸️ Đã tạm dừng nhạc.")
+
+
+@bot.command(name="resume")
+async def resume(ctx):
+    """Tiếp tục phát nhạc"""
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Tiếp tục phát nhạc.")
+
+
+@bot.command(name="loop")
+async def loop(ctx):
+    """Bật/Tắt chế độ lặp bài đang phát"""
     guild_id = ctx.guild.id
-    if guild_id in music_queues:
-        music_queues[guild_id].clear()
-    loop_states[guild_id] = False
+    current = loop_status.get(guild_id, False)
+    loop_status[guild_id] = not current
+    status_str = "bật 🔂" if not current else "tắt ➡️"
+    await ctx.send(f"Chế độ lặp lại bài hát đã được **{status_str}**")
+
+
+@bot.command(name="stop")
+async def stop(ctx):
+    """Dừng nhạc, xóa toàn bộ Queue và thoát voice"""
+    guild_id = ctx.guild.id
+    if guild_id in queues:
+        queues[guild_id].clear()
+    loop_status[guild_id] = False
 
     if ctx.voice_client:
+        ctx.voice_client.stop()
         await ctx.voice_client.disconnect()
-        await ctx.send("*cúi đầu* Tôi xin phép rời khỏi kênh thoại nhé...")
+        await ctx.send("⏹️ Đã dừng nhạc, dọn sạch hàng đợi và rời khỏi phòng.")
+
+
+# ================= 5. CÁC LỆNH TÍCH HỢP AI =================
+
+
+@bot.command(name="ai")
+async def ai_chat(ctx, *, prompt: str):
+    """Trò chuyện trực tiếp với AI Yuri"""
+    async with ctx.typing():
+        system_instruction = (
+            "Bạn là Yuri, một trợ lý bot Discord thông minh, dịu dàng, thân thiện "
+            "nhưng đôi lúc có chút dí dỏm. Hãy trả lời ngắn gọn, tự nhiên."
+        )
+        full_prompt = f"{system_instruction}\n\nNgười dùng hỏi: {prompt}"
+
+        try:
+            response = ai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=full_prompt,
+            )
+            await ctx.send(response.text)
+        except Exception:
+            await ctx.send("💬 Xin lỗi, Yuri đang gặp sự cố khi xử lý câu hỏi này!")
+
+
+# ================= 6. KHỞI CHẠY BOT =================
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot Yuri đã sẵn sàng dưới tên: {bot.user.name}")
+
 
 if __name__ == "__main__":
-    t_flask = threading.Thread(target=run_flask)
-    t_flask.daemon = True
-    t_flask.start()
-
-    yuri_token = os.environ.get("DISCORD_TOKEN")
-    if yuri_token:
-        yuri_bot.run(yuri_token)
+    bot.run(DISCORD_TOKEN)
