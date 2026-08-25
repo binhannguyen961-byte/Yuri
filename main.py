@@ -31,7 +31,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
 # Khởi tạo AI Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Khởi tạo Discord Bot
+# Khởi tạo Discord Bot với prefix '!' và loại bỏ help mặc định
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
@@ -75,7 +75,7 @@ def check_queue_and_play(ctx):
     )
 
 
-# ================= 4. LỆNH HƯỚNG DẪN (HELP) =================
+# ================= 4. LỆNH HƯỚNG DẪN (!Yhelps) =================
 
 
 @bot.command(name="Yhelps")
@@ -87,7 +87,7 @@ async def custom_help(ctx):
             "X-Xin lỗi vì làm phiền... Mình là Yuri. Nếu bạn muốn mình phát chút nhạc "
             "để đọc sách hoặc trò chuyện cùng mình, dưới đây là các lệnh bạn có thể dùng..."
         ),
-        color=discord.Color.from_rgb(108, 52, 131), # Tông màu tím đậm đặc trưng của Yuri
+        color=discord.Color.from_rgb(108, 52, 131), # Tông màu tím đặc trưng của Yuri
     )
 
     embed.add_field(
@@ -231,29 +231,30 @@ async def stop(ctx):
         await ctx.send("⏹️ Cảm ơn bạn. Mình xin phép về lại góc nhỏ đọc sách đây...")
 
 
-# ================= 6. CÁC LỆNH TÍCH HỢP AI (YURI PERSONA) =================
+# ================= 6. CÁC LỆNH TÍCH HỢP AI (YURI PERSONA - FIXED) =================
 
 
 @bot.command(name="ai")
 async def ai_chat(ctx, *, prompt: str):
     async with ctx.typing():
-        # System Instruction tái hiện nhân vật Yuri trong DDLC
+        # Chỉ dẫn tính cách cho Yuri (DDLC)
         system_instruction = (
-            "Bạn là Yuri, một thành viên của Câu lạc bộ Văn học trong tựa game Doki Doki Literature Club (DDLC).\n"
-            "- Tính cách: Ngượng ngùng, rụt rè, cực kỳ lịch sự, từ tốn, dùng từ ngữ chau chuốt và trưởng thành. Thích đọc sách tiểu thuyết kinh dị/tâm lý phức tạp, thích pha trà đạo và bàn luận về thơ văn.\n"
-            "- Cách nói chuyện: Đôi lúc ngập ngừng (dùng các từ như 'Ứm...', 'X-Xin lỗi...', 'Ít nhất là...'), trả lời sâu sắc, chu đáo, tinh tế.\n"
+            "Bạn là Yuri, một thành viên của Câu lạc bộ Văn học trong game Doki Doki Literature Club (DDLC).\n"
+            "- Tính cách: Ngượng ngùng, rụt rè, cực kỳ lịch sự, dùng từ ngữ chau chuốt và trưởng thành. Thích đọc sách tiểu thuyết kinh dị/tâm lý phức tạp, thích pha trà đạo và bàn luận về thơ văn.\n"
+            "- Cách nói chuyện: Đôi lúc ngập ngừng (dùng các từ như 'Ứm...', 'X-Xin lỗi...', 'Ít nhất là...'), trả lời sâu sắc, chu đáo.\n"
             "- Luôn giữ đúng vai nhân vật này trong suốt cuộc trò chuyện và xưng 'mình' hoặc 'Yuri' và gọi người dùng là 'bạn'."
         )
         
-        full_prompt = f"{system_instruction}\n\nNgười dùng nhắn: {prompt}"
-
         try:
+            # Gọi API Gemini chuẩn hóa không bị nghẽn
             response = ai_client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=full_prompt,
+                contents=prompt,
+                config={"system_instruction": system_instruction}
             )
             await ctx.send(response.text)
-        except Exception:
+        except Exception as e:
+            print(f"[Error AI]: {e}")
             await ctx.send("💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa thể trả lời ngay được...")
 
 
