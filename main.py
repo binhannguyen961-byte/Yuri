@@ -149,7 +149,7 @@ class QuickChatFCSView(discord.ui.View):
       )
     if self.hp <= 0:
       return await interaction.response.send_message(
-          "❌ Chiến trường đã kết thúc! Xe tăng của bạn đã bị bắn hạ.",
+          "❌ Chiến trường đã kết thúc! Xe tăng của bạn đã bị bắn hạ hoàn toàn.",
           ephemeral=True,
       )
 
@@ -220,6 +220,11 @@ class QuickChatFCSView(discord.ui.View):
       embed.add_field(name="🛡️ Khí tài", value=f"`{self.tank_name.upper()}`", inline=True)
       embed.add_field(name="❤️ HP Hiện tại", value=f"**{self.hp}%**", inline=True)
       embed.add_field(name="🌦️ Thời tiết", value=self.current_weather["name"], inline=True)
+      
+      if self.hp <= 0:
+        embed.add_field(name="⚠️ Trạng thái", value="❌ **Đã bị tiêu diệt hoàn toàn!**", inline=False)
+        self.clear_items()
+        
       return await interaction.message.edit(embed=embed, view=self)
 
     await interaction.response.defer()
