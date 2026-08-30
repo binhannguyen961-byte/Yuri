@@ -282,4 +282,197 @@ class QuickChatFCSView(discord.ui.View):
         title="🔧 KHOA HỤC KỸ THUẬT - SỬA CHỮA KHẨN CẤP",
         description=(
             "Đội ngũ kỹ thuật viên dã chiến đã khẩn trương hàn gắn vết thủng và"
-            " hồi phục hệ thống!\n```text\n{}\n
+            " hồi phục hệ thống!\n```text\n{}\n```".format(screen_art)
+        ),
+        color=discord.Color.green(),
+    )
+    await interaction.message.edit(embed=embed, view=self)
+
+
+# ================= 4. CÁC LỆNH HƯỚNG DẪN =================
+@bot.command(name="Yhelps")
+async def y_helps(ctx):
+  embed = discord.Embed(
+      title="📜 SỔ TAY CHIẾN DỊCH NGA - UKRAINE",
+      description="Hướng dẫn lệnh chọn phe và triển khai khí tài:",
+      color=discord.Color.dark_red(),
+  )
+  embed.add_field(
+      name="1. Khởi động chiến dịch",
+      value="`!campaign` - Mở bản đồ chiến sự.",
+      inline=False,
+  )
+  embed.add_field(
+      name="2. Chọn phe",
+      value="`!Yteam Nga` hoặc `!Yteam Uka` - Lựa chọn phe tham chiến.",
+      inline=False,
+  )
+  embed.add_field(
+      name="3. Xuất chiến",
+      value="`!deploy [tên xe]` - Đưa xe tăng vào tuyến đầu.",
+      inline=False,
+  )
+  await ctx.send(embed=embed)
+
+
+@bot.command(name="Y2.5Dhelps")
+async def y_25d_helps(ctx):
+  embed = discord.Embed(
+      title="🎯 HƯỚNG DẪN KÍNH NGẮM FCS & TURN-BASED",
+      description="`!fcs` để mở kính ngắm pháo thủ và chiến đấu theo lượt.",
+      color=discord.Color.purple(),
+  )
+  await ctx.send(embed=embed)
+
+
+# ================= 5. CÁC LỆNH CHIẾN DỊCH VĨ MÔ =================
+@bot.command(name="campaign")
+async def campaign(ctx):
+  guild_id = ctx.guild.id
+  game_sessions[guild_id] = {"team": None, "tanks": []}
+
+  embed = discord.Embed(
+      title="🌐 THÔNG BÁO TỪ STAVKA: MẶT TRẬN NGA - UKRAINE",
+      description=(
+          "Yuri khẽ đẩy gọng kính, trải bản đồ chiến sự Đông Âu lên bàn:\n'*Đồng"
+          " chí sĩ quan, chiến trường đã sẵn sàng! Vui lòng chọn phe tham chiến"
+          " bằng lệnh **`!Yteam Nga`** hoặc **`!Yteam Uka`** nhé...*'"
+      ),
+      color=discord.Color.red(),
+  )
+  await ctx.send(embed=embed)
+
+
+@bot.command(name="Yteam")
+async def y_team(ctx, team_name: str):
+  guild_id = ctx.guild.id
+  team_name_lower = team_name.capitalize()
+
+  if team_name_lower not in ["Nga", "Uka"]:
+    return await ctx.send(
+        "⚠️ Lựa chọn không hợp lệ! Vui lòng gõ chính xác: `!Yteam Nga` hoặc"
+        " `!Yteam Uka`."
+    )
+
+  if guild_id not in game_sessions:
+    game_sessions[guild_id] = {"tanks": []}
+
+  game_sessions[guild_id]["team"] = team_name_lower
+  tanks_in_kho = ", ".join([f"`{t}`" for t in TEAM_TANKS[team_name_lower]])
+
+  embed = discord.Embed(
+      title="🎖️ ĐÃ XÁC NHẬN GIA NHẬP PHE: {}".format(
+          team_name_lower.upper()
+      ),
+      description=(
+          "Yuri mỉm cười gật đầu:\n'*Tuyệt vời! Đồng chí đã chọn phe"
+          " **{}**. Dưới đây là danh sách khí tài sẵn sàng trong kho của"
+          " chúng ta:\n{}\n\nHãy dùng lệnh **`!deploy [tên xe]`** để xuất chiến"
+          " ngay lập tức nhé!*'".format(team_name_lower, tanks_in_kho)
+      ),
+      color=discord.Color.blue(),
+  )
+  await ctx.send(embed=embed)
+
+
+@bot.command(name="deploy")
+async def deploy(ctx, tank_model: str, sector: str = "Tuyến đầu"):
+  guild_id = ctx.guild.id
+
+  if guild_id not in game_sessions or not game_sessions[guild_id].get("team"):
+    return await ctx.send(
+        "⚠️ Đồng chí chưa chọn phe! Vui lòng gõ `!campaign` rồi dùng `!Yteam Nga`"
+        " hoặc `!Yteam Uka` trước."
+    )
+
+  current_team = game_sessions[guild_id]["team"]
+  allowed_tanks = TEAM_TANKS[current_team]
+
+  if tank_model.lower() not in allowed_tanks:
+    tanks_str = ", ".join([f"`{t}`" for t in allowed_tanks])
+    return await ctx.send(
+        "❌ **Báo động từ Bộ tham mưu!** Khí tài `{}` **không có thực hoặc không"
+        " thuộc biên chế** của phe {} trong chiến dịch này!\n\n📦 **Danh sách xe"
+        " tăng hợp lệ của phe {}:** {}".format(
+            tank_model, current_team, current_team, tanks_str
+        )
+    )
+
+  game_sessions[guild_id]["tanks"].append(
+      {"model": tank_model, "sector": sector}
+  )
+  await ctx.send(
+      "🛡️ **Biên chế thành công!** Khí tài **{}** đã tiến vào chốt **{}**."
+      " Sẵn sàng kích hoạt lệnh `!fcs` để chiến đấu!".format(tank_model, sector)
+  )
+
+
+@bot.command(name="status")
+async def status(ctx):
+  guild_id = ctx.guild.id
+  if guild_id not in game_sessions:
+    return await ctx.send(
+        "❌ Chưa có chiến dịch nào! Hãy gõ `!campaign` để bắt đầu."
+    )
+
+  session = game_sessions[guild_id]
+  team_display = session.get("team", "Chưa chọn")
+  tank_list = (
+      ", ".join([f"{t['model']} ({t['sector']})" for t in session["tanks"]])
+      if session["tanks"]
+      else "Chưa triển khai xe nào"
+  )
+
+  embed = discord.Embed(
+      title="📊 BÁO CÁO HẬU CẦN CHIẾN TRƯỜNG",
+      color=discord.Color.gold(),
+  )
+  embed.add_field(name="🛡️ Phe tham chiến", value=team_display, inline=True)
+  embed.add_field(name="🚀 Xe tăng trực chiến", value=tank_list, inline=False)
+  await ctx.send(embed=embed)
+
+
+# ================= 6. LỆNH KÍNH NGẮM FCS & TURN-BASED =================
+@bot.command(name="fcs")
+async def fcs(ctx):
+  guild_id = ctx.guild.id
+  tank_model = "t-90a"
+
+  if guild_id in game_sessions and game_sessions[guild_id]["tanks"]:
+    tank_model = game_sessions[guild_id]["tanks"][-1]["model"]
+
+  initial_screen = generate_fcs_view(
+      tank_model,
+      turret_dir="12 giờ",
+      speed="Đứng yên",
+      ammo="APFSDS",
+      hp=100,
+      status="Sẵn sàng",
+  )
+
+  embed = discord.Embed(
+      title="🔭 HỆ THỐNG KÍNH NGẮM FCS (TURN-BASED COMBAT)",
+      description=(
+          "Yuri thì thầm:\n'*Đồng chí đang điều khiển chiếc **{}** đối đầu với"
+          " kẻ địch. Mỗi lệnh bắn sẽ kích hoạt phản công theo lượt... Hãy cẩn"
+          " thận nhé!*\n```text\n{}\n```".format(tank_model, initial_screen)
+      ),
+      color=discord.Color.dark_purple(),
+  )
+
+  view = QuickChatFCSView(ctx, tank_model)
+  await ctx.send(embed=embed, view=view)
+
+
+# ================= 7. KHI BOT SẴN SÀNG =================
+@bot.event
+async def on_ready():
+  print(
+      f"✅ Nữ Sĩ quan Yuri (Bulletproof Clean Mode) đã trực chiến:"
+      f" {bot.user.name}"
+  )
+
+
+if __name__ == "__main__":
+  keep_alive()
+  bot.run(DISCORD_TOKEN)
