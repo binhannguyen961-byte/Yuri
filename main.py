@@ -187,7 +187,7 @@ class QuickChatFCSView(discord.ui.View):
 
       hit_taken = random.randint(15, 45)
       self.hp = max(0, self.hp - hit_taken)
-      extra_info += f"\n⚠️ **Địch chớp thời cơ nã pháo:** Gây -{hit_taken}% HP!"
+      extra_info += f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG: Gây ra {hit_taken}% sát thương!**"
 
       if self.hp <= 0:
         self.current_mission = "Đã bị bắn hạ (Wrecked)"
@@ -210,11 +210,16 @@ class QuickChatFCSView(discord.ui.View):
           self.current_weather["name"],
           self.action_counter,
       )
+      
+      embed_color = discord.Color.red() if self.hp <= 0 else discord.Color.orange()
       embed = discord.Embed(
           title=result_title,
-          description=f"*Yuri mồ hôi đầm đìa: 'Cố lên, xe chịu đựng chút nữa!'*\n\n```text\n{screen_art}\n```",
-          color=discord.Color.red() if self.hp <= 0 else discord.Color.orange(),
+          description=f"> 🗡️ *\"Yuri mồ hôi đầm đìa: 'Cố lên, xe chịu đựng chút nữa!'\"*\n\n```text\n{screen_art}\n```",
+          color=embed_color,
       )
+      embed.add_field(name="🛡️ Khí tài", value=f"`{self.tank_name.upper()}`", inline=True)
+      embed.add_field(name="❤️ HP Hiện tại", value=f"**{self.hp}%**", inline=True)
+      embed.add_field(name="🌦️ Thời tiết", value=self.current_weather["name"], inline=True)
       return await interaction.message.edit(embed=embed, view=self)
 
     await interaction.response.defer()
@@ -242,8 +247,7 @@ class QuickChatFCSView(discord.ui.View):
         enemy_surprise_dmg = random.randint(15, 45)
         self.hp = max(0, self.hp - enemy_surprise_dmg)
         extra_info = (
-            f"⚠️ **Địch phục kích khi đang nghỉ ngơi!** (Tỉ lệ {ambush_chance}%) Trúng đòn mất"
-            f" -{enemy_surprise_dmg}% HP."
+            f"⚠️ **KẺ ĐỊCH PHỤC KÍCH: Gây ra {enemy_surprise_dmg}% sát thương!**"
         )
       else:
         extra_info = "🛡️ Cắm trại an toàn. Yuri pha trà nóng động viên!"
@@ -270,15 +274,15 @@ class QuickChatFCSView(discord.ui.View):
         if wt_type == "NON-PEN":
           enemy_dmg = random.randint(0, 5)
           result_title = "🎯 KHAI HỎA: NON-PEN (Bật giáp)"
-          extra_info = f"Đạn va chạm nhưng không xuyên được giáp địch! Gây -{enemy_dmg}% HP."
+          extra_info = f"Đạn va chạm nhưng không xuyên giáp! Gây địch mất -{enemy_dmg}% HP."
         elif wt_type == "HIT":
           enemy_dmg = random.randint(15, 45)
           result_title = "🎯 KHAI HỎA: XUYÊN THỦNG (HIT)"
-          extra_info = f"Viên đạn xé gió xuyên thẳng vào khoang chiến đấu! Gây -{enemy_dmg}% HP."
+          extra_info = f"Viên đạn xé gió xuyên thủng giáp! Gây địch mất -{enemy_dmg}% HP."
         else:
           enemy_dmg = random.randint(25, 50)
           result_title = "🎯 KHAI HỎA: CRITICAL HIT"
-          extra_info = f"Trúng điểm yếu chí mạng của địch, phá hủy hệ thống! Gây -{enemy_dmg}% HP."
+          extra_info = f"Trúng điểm yếu chí mạng của địch! Gây địch mất -{enemy_dmg}% HP."
 
     elif action_type == "binocular":
       self.locked_distance = random.randint(400, 2800)
@@ -327,7 +331,7 @@ class QuickChatFCSView(discord.ui.View):
     ):
       hit_taken = random.randint(15, 45)
       self.hp = max(0, self.hp - hit_taken)
-      extra_info += f"\n⚠️ **Địch phản công:** Gây -{hit_taken}% HP!"
+      extra_info += f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG: Gây ra {hit_taken}% sát thương!**"
 
     if self.hp <= 0:
       self.current_mission = "Đã bị bắn hạ (Wrecked)"
@@ -351,7 +355,7 @@ class QuickChatFCSView(discord.ui.View):
             ),
         )
         if response and response.text:
-          report = response.text
+          report = response.text.strip()
           break
       except Exception:
         continue
@@ -370,16 +374,24 @@ class QuickChatFCSView(discord.ui.View):
         self.action_counter,
     )
 
+    if self.hp <= 0:
+      embed_color = discord.Color.red()
+    elif "NON-PEN" in result_title or "MISS" in result_title:
+      embed_color = discord.Color.orange()
+    else:
+      embed_color = discord.Color.dark_red()
+
     embed = discord.Embed(
         title=result_title,
-        description=f"*{report}*\n\n```text\n{screen_art}\n```",
-        color=discord.Color.red() if self.hp <= 0 else discord.Color.dark_red(),
+        description=f"> 🗡️ *\"{report}\"*\n\n```text\n{screen_art}\n```",
+        color=embed_color,
     )
-    embed.add_field(name="🛡️ Khí tài", value=self.tank_name, inline=True)
-    embed.add_field(name="❤️ HP", value=f"{self.hp}%", inline=True)
+    embed.add_field(name="🛡️ Khí tài", value=f"`{self.tank_name.upper()}`", inline=True)
+    embed.add_field(name="❤️ HP Hiện tại", value=f"**{self.hp}%**", inline=True)
     embed.add_field(name="🌦️ Thời tiết", value=self.current_weather["name"], inline=True)
     
     if self.hp <= 0:
+      embed.add_field(name="⚠️ Trạng thái", value="❌ **Đã bị tiêu diệt hoàn toàn!**", inline=False)
       self.clear_items()
       
     await interaction.message.edit(embed=embed, view=self)
@@ -443,24 +455,25 @@ async def on_message(message):
 
     prompt = f"Đồng chí Nam hỏi bạn tại doanh trại: '{user_query}'. Hãy trả lời cực kỳ ngắn gọn, sắc sảo theo đúng tính cách DDLC."
     
-    reply_text = "..."
-    models_to_try = ["gemini-2.5-flash", "gemini-3.6-flash"]
-    for m in models_to_try:
-      try:
-        response = ai_client.models.generate_content(
-            model=m,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=YURI_MILITARY_SYSTEM_PROMPT
-            ),
-        )
-        if response and response.text:
-          reply_text = response.text
-          break
-      except Exception:
-        continue
+    async with message.channel.typing():
+      reply_text = "Hệ thống tư duy đang khởi động..."
+      models_to_try = ["gemini-2.5-flash", "gemini-3.6-flash"]
+      for m in models_to_try:
+        try:
+          response = ai_client.models.generate_content(
+              model=m,
+              contents=prompt,
+              config=types.GenerateContentConfig(
+                  system_instruction=YURI_MILITARY_SYSTEM_PROMPT
+              ),
+          )
+          if response and response.text:
+            reply_text = response.text.strip()
+            break
+        except Exception:
+          continue
 
-    await message.reply(f"🗡️ *{reply_text}*")
+    await message.reply(f"🗡️ *\"{reply_text}\"*\n- - -\n*@An Nguyền*")
     return
 
   await bot.process_commands(message)
@@ -544,7 +557,7 @@ async def y_sleep(ctx):
   msg = f"🏕️ **[!YSLEEP]** Kíp chiến đấu chợp mắt nghỉ ngơi...\n"
   if hit_by_enemy:
     dmg = random.randint(15, 45)
-    msg += f"⚠️ **Bị phục kích!** (Tỉ lệ {ambush_chance}%) Kẻ địch đột kích trong bóng tối, gây thiệt hại **-{dmg}% HP**!"
+    msg += f"⚠️ **KẺ ĐỊCH PHỤC KÍCH: Gây ra {dmg}% sát thương!**"
   else:
     msg += f"🛡️ Nghỉ ngơi an toàn! Hồi phục thành công **+{heal_amount}% HP**."
 
