@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-  return "War Thunder Uncut Yuri Bot (Updated Mechanics) is operational..."
+  return "War Thunder Yuri Bot (Steel Hearts & Freedom Forever Update) is operational..."
 
 def run_flask():
   port = int(os.environ.get("PORT", 8080))
@@ -43,12 +43,10 @@ TEAM_TANKS = {
     "Uka": ["m1a1-abrams", "leopard-2a7", "bradley-tusk", "puma", "bmp-2", "t-72b3"],
 }
 
-# Danh sách cấu hình trang bị kỹ thuật (ĐÃ XÁC NHẬN BMPT CÓ ATGM)
 LASER_RF_TANKS = ["t-90m", "t-90a", "t-72b3m", "t-80", "leopard-2a7", "m1a1-abrams", "puma", "bmpt"]
 ATGM_TANKS = ["t-80", "t-90a", "t-90m", "t-72b3m", "bmp-2", "bmp-3", "bradley-tusk", "t-64bv", "bmpt"]
 AUTOCANNON_TANKS = ["bmp-2", "bmp-3", "bradley-tusk", "puma", "bmpt"]
 
-# Danh sách trang bị phòng thủ đặc chủng
 APS_TANKS = ["t-90m"]
 IRCM_TANKS = ["puma", "t-90a", "t-90m"]
 ERA_TANKS = ["t-80", "t-90a", "t-90m", "t-72b3m", "t-72b3", "t-64bv", "bradley-tusk"]
@@ -82,7 +80,10 @@ def generate_fcs_view(
     action_counter=0,
     crew_status=None,
     has_lrf=False,
-    defenses_info=""
+    defenses_info="",
+    has_steel_hearts=False,
+    has_freedom_forever=False,
+    retreat_charges=0
 ):
   hp_bar = "█" * (hp // 20) + "░" * (5 - (hp // 20))
 
@@ -95,8 +96,14 @@ def generate_fcs_view(
   l_str = "🟢 Sẵn sàng" if crew_status["loader"] else "❌ HY SINH"
 
   lrf_str = " (LRF: TỰ ĐỘNG KHÓA)" if has_lrf else " (THỦ CÔNG)"
+  
+  trait_str = ""
+  if has_steel_hearts:
+    trait_str = " [🔥 STEEL HEARTS]"
+  elif has_freedom_forever:
+    trait_str = f" [🕊️ FREEDOM FOREVER (Lùi safe: {retreat_charges})]"
 
-  screen = f"""[BATTLEFIELD] Thời tiết: {weather} | Chu kỳ hành động: {action_counter}/4
+  screen = f"""[BATTLEFIELD] Thời tiết: {weather} | Chu kỳ: {action_counter}/4{trait_str}
 [FCS: {tank_name.upper()} - {fcs_type.upper()}] | HP: [{hp_bar}] {hp}%
 ⚙️ Cơ động: {speed} | 📦 Đạn: {ammo}
 🛡️ Hệ thống phòng thủ: {defenses_info}
@@ -108,7 +115,7 @@ def generate_fcs_view(
     screen += "\n❌ CHIẾN TRƯỜNG KẾT THÚC: Xe tăng đã bị tiêu diệt hoặc mất toàn bộ kíp lái!"
   elif cooldown_turns > 0:
     screen += f"\n⚠️ TRẠNG THÁI: Sửa chữa dã chiến (Còn {cooldown_turns} lượt)"
-  elif "Bão tố" in weather or "Trời tối" in weather:
+  elif ("Bão tố" in weather or "Trời tối" in weather) and not has_steel_hearts:
     screen += "\n⚠️ CẢNH BÁO: Thời tiết khắc nghiệt! Bắt buộc phải dùng [Nghỉ ngơi] hoặc lệnh !Ysleep."
 
   if enemy_info and hp > 0:
@@ -124,10 +131,11 @@ def generate_fcs_view(
 # ================= 4. GIAO DIỆN NÚT BẤM INTERACTIVE (FCS VIEW) =================
 class QuickChatFCSView(discord.ui.View):
 
-  def __init__(self, ctx, tank_name):
+  def __init__(self, ctx, tank_name, team_name="Nga"):
     super().__init__(timeout=300)
     self.ctx = ctx
     self.tank_name = tank_name.lower()
+    self.team_name = team_name
     self.fcs_type = (
         "basic"
         if any(x in self.tank_name for x in ["bmp-2", "bradley", "puma"])
@@ -159,6 +167,19 @@ class QuickChatFCSView(discord.ui.View):
     self.has_ircm = any(x in self.tank_name for x in IRCM_TANKS)
     self.has_era = any(x in self.tank_name for x in ERA_TANKS)
 
+    # 🌟 XỬ LÝ TRAIT THEO PHE
+    self.has_steel_hearts = False
+    self.has_freedom_forever = False
+    self.retreat_charges = 0
+
+    if self.team_name == "Nga":
+      # Steel Hearts xuất hiện ở team Nga với tỉ lệ 25%
+      self.has_steel_hearts = random.randint(1, 100) <= 25
+    elif self.team_name == "Uka":
+      # Freedom Forever áp dụng cho team Ukraine
+      self.has_freedom_forever = True
+      self.retreat_charges = 2
+
     # Trạng thái kíp lái
     self.crew = {"commander": True, "gunner": True, "driver": True, "loader": True}
 
@@ -169,7 +190,7 @@ class QuickChatFCSView(discord.ui.View):
     defs = []
     if any(x in tank_n for x in APS_TANKS): defs.append("APS (25%)")
     if any(x in tank_n for x in IRCM_TANKS): defs.append("IRCM (35%)")
-    if any(x in tank_n for x in ERA_TANKS): defs.append("ERA (55%)")
+    if any(x in tank_n for x in ERA_TANKS): defs.append("ERA (25%)")
     return " | ".join(defs) if defs else "Giáp thép tiêu chuẩn"
 
   def check_weather_cycle(self):
@@ -183,7 +204,6 @@ class QuickChatFCSView(discord.ui.View):
     return False
 
   def check_crew_status(self):
-
     alive_count = sum(1 for v in self.crew.values() if v)
     if alive_count <= 1:
       self.hp = 0
@@ -216,7 +236,8 @@ class QuickChatFCSView(discord.ui.View):
           ephemeral=True,
       )
 
-    is_severe_weather = self.current_weather["requires_rest"]
+    # Steel Hearts cho phép bỏ qua thời tiết khắc nghiệt
+    is_severe_weather = self.current_weather["requires_rest"] and not self.has_steel_hearts
     if is_severe_weather and action_type not in ["rest", "binocular"]:
       return await interaction.response.send_message(
           f"⚠️ Thời tiết đang là **{self.current_weather['name']}**! Bạn bắt"
@@ -246,8 +267,10 @@ class QuickChatFCSView(discord.ui.View):
       extra_info = f"🛠️ Đang sửa chữa dã chiến... (Còn lại {self.repair_cooldown} lượt)."
       result_title = "⚙️ BẢO TRÌ CHIẾN TRƯỜNG"
 
-      # ĐÃ GIẢM SÁT THƯƠNG ĐỊCH 10% (10 - 35%)
       hit_taken = random.randint(10, 35)
+      if self.has_steel_hearts:
+        hit_taken = int(hit_taken * 0.9)  # Giảm 10% sát thương nhận vào
+      
       self.hp = max(0, self.hp - hit_taken)
       extra_info += f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG: Gây ra {hit_taken}% sát thương!**"
       extra_info += self.apply_random_crew_casualty()
@@ -275,7 +298,10 @@ class QuickChatFCSView(discord.ui.View):
           self.action_counter,
           self.crew,
           self.has_lrf,
-          self.get_defense_string(self.tank_name)
+          self.get_defense_string(self.tank_name),
+          self.has_steel_hearts,
+          self.has_freedom_forever,
+          self.retreat_charges
       )
 
       embed = discord.Embed(
@@ -310,13 +336,16 @@ class QuickChatFCSView(discord.ui.View):
     extra_info = ""
     result_title = ""
     enemy_dmg = 0
+    safe_retreat_activated = False
 
-    # 1. HỆ THỐNG NGHỈ NGƠI & THAY THẾ KÍP LÁI (ĐÃ GIẢM HP HỒI VỀ 15-30%)
+    # 1. NGHỈ NGƠI
     if action_type == "rest":
       ambush_chance = 45
       hit_by_enemy_first = random.randint(1, 100) <= ambush_chance
       if hit_by_enemy_first:
         enemy_surprise_dmg = random.randint(10, 25)
+        if self.has_steel_hearts:
+          enemy_surprise_dmg = int(enemy_surprise_dmg * 0.9)
         self.hp = max(0, self.hp - enemy_surprise_dmg)
         extra_info = f"⚠️ **KẺ ĐỊCH PHỤC KÍCH KHÔNG KÍCH:** Gây ra {enemy_surprise_dmg}% sát thương!"
       else:
@@ -336,7 +365,7 @@ class QuickChatFCSView(discord.ui.View):
       self.current_mission = "Phòng thủ & Hồi sức"
       self.current_weather = random.choice(WEATHER_CONDITIONS)
 
-    # 2. HỆ THỐNG MÁY ĐO CỰ LY & ĐIỀU CHỈNH THƯỚC NGẮM (THÊM ±300m)
+    # 2. ĐO CỰ LY & THƯỚC NGẮM
     elif action_type == "rangefinder":
       if not self.crew["commander"] and not self.crew["gunner"]:
         result_title = "❌ ĐO CỰ LY THẤT BẠI"
@@ -385,8 +414,14 @@ class QuickChatFCSView(discord.ui.View):
           hits = sum(1 for _ in range(shots) if random.randint(1, 100) <= 80)
           damage_per_shot = random.randint(5, 8)
           total_dmg = hits * damage_per_shot
+
+          # Trait Damage Multiplier
+          if self.has_steel_hearts:
+            total_dmg = int(total_dmg * 1.05)
+          elif self.has_freedom_forever:
+            total_dmg = int(total_dmg * 1.15)
           
-          if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 55:
+          if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 25:
             total_dmg = int(total_dmg * 0.3)
             extra_info = f"Nã liên thanh **{shots}** phát đạn! **Giáp ERA địch phát nổ giảm sát thương!** Gây **{total_dmg}% HP**."
           else:
@@ -401,7 +436,14 @@ class QuickChatFCSView(discord.ui.View):
             extra_info = "Đạn va chạm góc hiểm bị bật giáp ra ngoài!"
           else:
             base_dmg = random.randint(25, 45) if hit_type == "HIT" else random.randint(45, 65)
-            if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 55:
+            
+            # Trait Damage Multiplier
+            if self.has_steel_hearts:
+              base_dmg = int(base_dmg * 1.05)
+            elif self.has_freedom_forever:
+              base_dmg = int(base_dmg * 1.15)
+
+            if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 25:
               base_dmg = int(base_dmg * 0.3)
               result_title = f"🎯 KHAI HỎA: {hit_type} (GIÁP ERA ĐỊCH KÍCH HOẠT)"
               extra_info = f"Giáp phản ứng nổ ERA của địch phát nổ triệt tiêu 70% sát thương! Chỉ gây **-{base_dmg}% HP**."
@@ -424,7 +466,14 @@ class QuickChatFCSView(discord.ui.View):
           extra_info = f"Đèn hồng ngoại IRCM của **{self.enemy_tank.upper()}** làm mất tín hiệu dẫn đường tên lửa!"
         else:
           dmg_atgm = random.randint(35, 55)
-          if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 55:
+          
+          # Trait Damage Multiplier
+          if self.has_steel_hearts:
+            dmg_atgm = int(dmg_atgm * 1.05)
+          elif self.has_freedom_forever:
+            dmg_atgm = int(dmg_atgm * 1.15)
+
+          if any(x in self.enemy_tank for x in ERA_TANKS) and random.randint(1, 100) <= 25:
             dmg_atgm = int(dmg_atgm * 0.3)
             result_title = "🚀 ATGM TRÚNG MỤC TIÊU (GIÁP ERA ĐỊCH KÍCH HOẠT)"
             extra_info = f"Giáp ERA của địch nổ tung triệt tiêu đầu đạn nổ lõm! Chỉ gây **-{dmg_atgm}% HP**."
@@ -471,32 +520,53 @@ class QuickChatFCSView(discord.ui.View):
       else:
         self.speed = "Lùi về ẩn nấp"
         result_title = "🔙 CƠ ĐỘNG: LÙI VỀ"
-        extra_info = "Rút lui về sau gờ đất né làn đạn."
+        
+        # XỬ LÝ LÙI AN TOÀN CHO FREEDOM FOREVER
+        is_severe = self.current_weather["requires_rest"]
+        if self.has_freedom_forever and self.retreat_charges > 0 and not is_severe:
+          self.retreat_charges -= 1
+          safe_retreat_activated = True
+          extra_info = f"🕊️ **FREEDOM FOREVER:** Lùi lại êm đẹp không bị tấn công! (Còn {self.retreat_charges} lần)"
+        else:
+          if self.has_freedom_forever and is_severe:
+            extra_info = "⚠️ **KHÔNG THỂ LÙI SAFE:** Đang ở trong thời tiết khắc nghiệt! Kẻ địch vẫn có thể phản công."
+          else:
+            extra_info = "Rút lui về sau gờ đất né làn đạn."
+            
         self.current_mission = "Trinh sát chiến tuyến"
 
-    # 7. SỬA CHỮA DÃ CHIẾN (CHỈ CÒN 1 LƯỢT COOLDOWN)
+    # 7. SỬA CHỮA DÃ CHIẾN
     elif action_type == "repair":
       self.repair_cooldown = 1
       self.speed = "Đang đứng sửa chữa dã chiến"
       result_title = "🛠️ SỬA CHỮA DÃ CHIẾN (1 LƯỢT)"
-      heal_amount = random.randint(15, 25)
+      
+      base_heal = random.randint(15, 25)
+      if self.has_freedom_forever:
+        bonus_pct = random.uniform(0.30, 0.45)
+        heal_amount = int(base_heal * (1.0 + bonus_pct))
+        extra_heal_msg = f" (Tăng {int(bonus_pct*100)}% từ Freedom Forever)"
+      else:
+        heal_amount = base_heal
+        extra_heal_msg = ""
+
       self.hp = min(100, self.hp + heal_amount)
       
       dead_crew = [k for k, v in self.crew.items() if not v]
       if dead_crew:
         revived = dead_crew[0]
         self.crew[revived] = True
-        extra_info = f"Hàn gắn giáp dã chiến, hồi phục **+{heal_amount}% HP** và sơ cứu cho 1 thành viên kíp lái!"
+        extra_info = f"Hàn gắn giáp dã chiến, hồi phục **+{heal_amount}% HP**{extra_heal_msg} và sơ cứu cho 1 thành viên kíp lái!"
       else:
-        extra_info = f"Hàn gắn khung gầm dã chiến, hồi phục **+{heal_amount}% HP**!"
+        extra_info = f"Hàn gắn khung gầm dã chiến, hồi phục **+{heal_amount}% HP**{extra_heal_msg}!"
       self.current_mission = "Sửa chữa & Phòng thủ"
 
     weather_cleared = self.check_weather_cycle()
     if weather_cleared:
       extra_info += "\n⛅ **Bầu trời chuyển biến:** Bão tố/Đêm tối đã chấm dứt!"
 
-    # KẺ ĐỊCH PHẢN CÔNG (ĐÃ GIẢM SÁT THƯƠNG THƯỜNG 10%: 10-35%)
-    if action_type not in ["move_backward", "repair", "rest"] and enemy_dmg < 100 and self.hp > 0:
+    # KẺ ĐỊCH PHẢN CÔNG (Nếu kích hoạt Safe Retreat của Freedom Forever thì không bị đánh)
+    if action_type not in ["repair", "rest"] and not safe_retreat_activated and enemy_dmg < 100 and self.hp > 0:
       enemy_action_is_atgm = random.randint(1, 100) <= 40
       hit_taken = random.randint(10, 35)
       
@@ -509,10 +579,14 @@ class QuickChatFCSView(discord.ui.View):
           hit_taken = 0
 
       if hit_taken > 0:
-        if self.has_era and random.randint(1, 100) <= 55:
+        if self.has_era and random.randint(1, 100) <= 25:
           hit_taken = int(hit_taken * 0.3)
           extra_info += f"\n\n🧱 **GIÁP ERA PHÁT NỔ:** Triệt tiêu đòn đánh! Chỉ nhận **{hit_taken}%** sát thương."
         else:
+          if self.has_steel_hearts:
+            hit_taken = int(hit_taken * 0.9)
+          # Freedom Forever không có giảm dame (hit_taken giữ nguyên 100%)
+
           extra_info += f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG:** Gây ra {hit_taken}% sát thương!"
 
         self.hp = max(0, self.hp - hit_taken)
@@ -556,7 +630,10 @@ class QuickChatFCSView(discord.ui.View):
         self.action_counter,
         self.crew,
         self.has_lrf,
-        self.get_defense_string(self.tank_name)
+        self.get_defense_string(self.tank_name),
+        self.has_steel_hearts,
+        self.has_freedom_forever,
+        self.retreat_charges
     )
 
     embed_color = discord.Color.red() if self.hp <= 0 else discord.Color.dark_red()
@@ -569,6 +646,11 @@ class QuickChatFCSView(discord.ui.View):
     embed.add_field(name="🛡️ Khí tài", value=f"`{self.tank_name.upper()}`", inline=True)
     embed.add_field(name="❤️ HP Hiện tại", value=f"**{self.hp}%**", inline=True)
     embed.add_field(name="🌦️ Thời tiết", value=self.current_weather["name"], inline=True)
+
+    if self.has_steel_hearts:
+      embed.add_field(name="🔥 Trait Đặc Biệt", value="✨ **Steel Hearts** (+5% Dame, -10% Sát thương nhận, Kháng thời tiết)", inline=False)
+    elif self.has_freedom_forever:
+      embed.add_field(name="🕊️ Trait Đặc Biệt", value=f"✨ **Freedom Forever** (+15% Dame, 0% Giảm dame, Hồi phục +30-45%, {self.retreat_charges} lượt lùi an toàn)", inline=False)
 
     if self.hp <= 0:
       embed.add_field(name="⚠️ Trạng thái", value="❌ **Đã bị tiêu diệt hoặc tổn thất kíp lái hoàn toàn!**", inline=False)
@@ -589,7 +671,7 @@ class QuickChatFCSView(discord.ui.View):
   async def btn_rf(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "rangefinder", "Sử dụng máy đo cự ly")
 
-  # --- ROW 1: CHỈNH THƯỚC NGẮM (ĐÃ THÊM NÚT 300M NHANH) ---
+  # --- ROW 1: CHỈNH THƯỚC NGẮM ---
   @discord.ui.button(label="🔼 Nâng (+100m)", style=discord.ButtonStyle.secondary, row=1)
   async def btn_zero_up(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "zero_up", "Nâng thước ngắm +100m")
@@ -811,6 +893,11 @@ async def deploy(ctx, tank_model: str, sector: str = "Tuyến đầu"):
 async def fcs(ctx):
   guild_id = ctx.guild.id
   tank_model = "bmpt"
+  team_name = "Nga"
+  
+  if guild_id in game_sessions and game_sessions[guild_id].get("team"):
+    team_name = game_sessions[guild_id]["team"]
+
   if guild_id in game_sessions and game_sessions[guild_id]["tanks"]:
     tank_model = game_sessions[guild_id]["tanks"][-1]["model"]
 
@@ -819,7 +906,7 @@ async def fcs(ctx):
       if any(x in tank_model.lower() for x in ["bmp-2", "bradley", "puma"])
       else "t72"
   )
-  view = QuickChatFCSView(ctx, tank_model)
+  view = QuickChatFCSView(ctx, tank_model, team_name)
   initial_screen = generate_fcs_view(
       tank_model,
       fcs_mode,
@@ -831,7 +918,10 @@ async def fcs(ctx):
       action_counter=view.action_counter,
       crew_status=view.crew,
       has_lrf=view.has_lrf,
-      defenses_info=view.get_defense_string(tank_model)
+      defenses_info=view.get_defense_string(tank_model),
+      has_steel_hearts=view.has_steel_hearts,
+      has_freedom_forever=view.has_freedom_forever,
+      retreat_charges=view.retreat_charges
   )
   embed = discord.Embed(
       title="🔭 HỆ THỐNG TÁC CHIẾN TỔNG HỢP WAR THUNDER FCS",
@@ -841,11 +931,16 @@ async def fcs(ctx):
       ),
       color=discord.Color.dark_purple(),
   )
+  if view.has_steel_hearts:
+    embed.add_field(name="🔥 Trait Đặc Biệt", value="✨ **Steel Hearts** (+5% Dame, -10% Sát thương nhận, Kháng thời tiết)", inline=False)
+  elif view.has_freedom_forever:
+    embed.add_field(name="🕊️ Trait Đặc Biệt", value=f"✨ **Freedom Forever** (+15% Dame, 0% Giảm dame, Hồi phục +30-45%, {view.retreat_charges} lượt lùi an toàn)", inline=False)
+    
   await ctx.send(embed=embed, view=view)
 
 @bot.event
 async def on_ready():
-  print(f"✅ Yuri War Thunder Master Bot (Fully Updated) đã sẵn sàng: {bot.user.name}")
+  print(f"✅ Yuri War Thunder Master Bot (Steel Hearts & Freedom Forever Edition) đã sẵn sàng: {bot.user.name}")
 
 if __name__ == "__main__":
   keep_alive()
