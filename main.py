@@ -42,10 +42,10 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # Lưu trữ trạng thái chiến dịch và phe phái của người chơi
 game_sessions = {}
 
-# Danh sách kho xe tăng theo phe
+# Danh sách kho xe tăng theo phe (Chuẩn hóa chữ thường để dễ đối chiếu)
 TEAM_TANKS = {
-    "Nga": ["T-80", "T-90A", "BMP-3", "BMPT", "T-90M", "T-72B3M", "T-64BV"],
-    "Uka": ["M1A1-Abrams", "Leopard-2A7", "Bradley-TUSK", "Puma", "BMP-2", "T-72B3"],
+    "Nga": ["t-80", "t-90a", "bmp-3", "bmpt", "t-90m", "t-72b3m", "t-64bv"],
+    "Uka": ["m1a1-abrams", "leopard-2a7", "bradley-tusk", "puma", "bmp-2", "t-72b3"],
 }
 
 YURI_MILITARY_SYSTEM_PROMPT = (
@@ -356,7 +356,7 @@ async def y_team(ctx, team_name: str):
   tanks_in_kho = ", ".join([f"`{t}`" for t in TEAM_TANKS[team_name_lower]])
 
   embed = discord.Embed(
-      title=f"🎖️ ĐÃ XÁC NHẬN GIA NHẬP PHE: {team_name_upper.upper()}",
+      title=f"🎖️ ĐÃ XÁC NHẬN GIA NHẬP PHE: {team_name_lower.upper()}",
       description=(
           f"Yuri mỉm cười gật đầu:\n'*Tuyệt vời! Đồng chí đã chọn phe"
           f" **{team_name_lower}**. Dưới đây là danh sách khí tài sẵn sàng trong"
@@ -371,12 +371,28 @@ async def y_team(ctx, team_name: str):
 @bot.command(name="deploy")
 async def deploy(ctx, tank_model: str, sector: str = "Tuyến đầu"):
   guild_id = ctx.guild.id
+
+  # Kiểm tra xem đã tạo chiến dịch và chọn phe chưa
   if guild_id not in game_sessions or not game_sessions[guild_id].get("team"):
     return await ctx.send(
         "⚠️ Đồng chí chưa chọn phe! Vui lòng gõ `!campaign` rồi dùng `!Yteam Nga`"
         " hoặc `!Yteam Uka` trước."
     )
 
+  current_team = game_sessions[guild_id]["team"]
+  allowed_tanks = TEAM_TANKS[current_team]
+
+  # Kiểm tra xem xe tăng có nằm trong kho của phe đó không (so sánh chữ thường)
+  if tank_model.lower() not in allowed_tanks:
+    tanks_str = ", ".join([f"`{t}`" for t in allowed_tanks])
+    return await ctx.send(
+        f"❌ **Báo động từ Bộ tham mưu!** Khí tài `{tank_model}` **không có thực"
+        f" hoặc không thuộc biên chế** của phe {current_team} trong chiến dịch"
+        f" này!\n\n📦 **Danh sách xe tăng hợp lệ của phe {current_team}:**"
+        f" {tanks_str}"
+    )
+
+  # Nếu hợp lệ, tiến hành deploy
   game_sessions[guild_id]["tanks"].append(
       {"model": tank_model, "sector": sector}
   )
@@ -447,7 +463,7 @@ async def fcs(ctx):
 @bot.event
 async def on_ready():
   print(
-      f"✅ Nữ Sĩ quan Yuri (Team & Turn-Based Mode) đã trực chiến: {bot.user.name}"
+      f"✅ Nữ Sĩ quan Yuri (Verification Mode) đã trực chiến: {bot.user.name}"
   )
 
 
