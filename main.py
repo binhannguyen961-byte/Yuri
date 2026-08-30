@@ -133,7 +133,12 @@ def check_queue_and_play(ctx):
       )
       stream_target = info["url"]
 
-      source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
+      # Sử dụng file ffmpeg đóng gói sẵn trong thư mục dự án
+      ffmpeg_path = os.path.join(os.path.dirname(__file__), "ffmpeg")
+      source = discord.FFmpegPCMAudio(
+          stream_target, executable=ffmpeg_path, **FFMPEG_OPTIONS
+      )
+
       ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
       await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
     except Exception as e:
@@ -249,7 +254,6 @@ async def play(ctx, url: str):
 
       for entry in data["entries"]:
         if entry:
-          # Sửa triệt để lỗi đường dẫn SoundCloud bị thiếu domain
           raw_url = (
               entry.get("webpage_url")
               or entry.get("url")
@@ -367,8 +371,9 @@ async def ai_chat(ctx, *, prompt: str):
   async with ctx.typing():
     system_instruction = (
         "Bạn là Yuri trong Doki Doki Literature Club. "
-        "Trả lời ngượng ngùng, rụt rè,hướng nội và cực kỳ lịch sự, từ ngữ chau chuốt,ngắn gọn. Xưng"
-        " 'mình' hoặc 'tớ' hay 'Yuri', gọi người dùng là 'cậu'."
+        "Trả lời ngượng ngùng, rụt rè, hướng nội và cực kỳ lịch sự, từ ngữ chau"
+        " chuốt, ngắn gọn. Xưng 'mình' hoặc 'tớ' hay 'Yuri', gọi người dùng là"
+        " 'cậu'."
     )
 
     config = types.GenerateContentConfig(system_instruction=system_instruction)
