@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-  return "War Thunder Complete Uncut Yuri Bot (APS/IRCM/ERA/Crew System) is operational..."
+  return "War Thunder Uncut Yuri Bot (Updated Mechanics) is operational..."
 
 def run_flask():
   port = int(os.environ.get("PORT", 8080))
@@ -43,9 +43,9 @@ TEAM_TANKS = {
     "Uka": ["m1a1-abrams", "leopard-2a7", "bradley-tusk", "puma", "bmp-2", "t-72b3"],
 }
 
-# Danh sách cấu hình trang bị kỹ thuật
+# Danh sách cấu hình trang bị kỹ thuật (ĐÃ XÁC NHẬN BMPT CÓ ATGM)
 LASER_RF_TANKS = ["t-90m", "t-90a", "t-72b3m", "t-80", "leopard-2a7", "m1a1-abrams", "puma", "bmpt"]
-ATGM_TANKS = ["t-80", "t-90a", "t-90m", "t-72b3m", "bmp-2", "bmp-3", "bradley-tusk", "t-64bv"]
+ATGM_TANKS = ["t-80", "t-90a", "t-90m", "t-72b3m", "bmp-2", "bmp-3", "bradley-tusk", "t-64bv", "bmpt"]
 AUTOCANNON_TANKS = ["bmp-2", "bmp-3", "bradley-tusk", "puma", "bmpt"]
 
 # Danh sách trang bị phòng thủ đặc chủng
@@ -54,12 +54,9 @@ IRCM_TANKS = ["puma", "t-90a", "t-90m"]
 ERA_TANKS = ["t-80", "t-90a", "t-90m", "t-72b3m", "t-72b3", "t-64bv", "bradley-tusk"]
 
 YURI_MILITARY_SYSTEM_PROMPT = (
-    "Bạn là Yuri - Sĩ quan tham mưu kiêm pháo thủ thiết giáp, mang phong cách "
-    "sắc sảo, trầm lặng và phảng phất nét nội tâm sắc bén, tinh tế đặc trưng của "
-    "nhân vật Yuri trong DDLC nhưng đặt trong bối cảnh quân sự hiện đại War Thunder. "
-    "Bạn nói cực kỳ ngắn gọn (dưới 3 câu), sắc lạnh, thỉnh thoảng có chút biểu cảm "
-    "cực đoan hoặc ám ảnh nhẹ về chiến thuật, dao găm và phân tích góc bắn thiết giáp. "
-    "Chỉ nói dài hơn một chút khi tương tác trực tiếp trong giao diện FCS để phân tích thông số kỹ thuật."
+    "Bạn là Yuri - Sĩ quan tham mưu kiêm pháo thủ thiết giáp trong game War Thunder. "
+    "Phong cách sắc lạnh, trầm lặng, phảng phất nét nội tâm sắc bén đặc trưng của Yuri (DDLC). "
+    "Bạn nói ngắn gọn (dưới 3 câu), tập trung phân tích góc bắn, thiệt hại kíp lái và các hệ thống phòng thủ."
 )
 
 WEATHER_CONDITIONS = [
@@ -108,7 +105,7 @@ def generate_fcs_view(
 🎯 Nhiệm vụ: {mission}"""
 
   if hp <= 0:
-    screen += "\n❌ CHIẾN TRƯỜNG KẾT THÚC: Xe tăng đã bị tiêu diệt hoàn toàn!"
+    screen += "\n❌ CHIẾN TRƯỜNG KẾT THÚC: Xe tăng đã bị tiêu diệt hoặc mất toàn bộ kíp lái!"
   elif cooldown_turns > 0:
     screen += f"\n⚠️ TRẠNG THÁI: Sửa chữa dã chiến (Còn {cooldown_turns} lượt)"
   elif "Bão tố" in weather or "Trời tối" in weather:
@@ -185,13 +182,25 @@ class QuickChatFCSView(discord.ui.View):
           return True
     return False
 
+  def check_crew_status(self):
+
+    alive_count = sum(1 for v in self.crew.values() if v)
+    if alive_count <= 1:
+      self.hp = 0
+      return True
+    return False
+
   def apply_random_crew_casualty(self):
     alive_crew = [k for k, v in self.crew.items() if v]
     if alive_crew and random.randint(1, 100) <= 40:
       casualty = random.choice(alive_crew)
       self.crew[casualty] = False
       names = {"commander": "Trưởng xe", "gunner": "Pháo thủ", "driver": "Lái xe", "loader": "Pháo thủ nạp đạn"}
-      return f"\n⚠️ **THIỆT HẠI KÍP LÁI:** {names[casualty]} đã hy sinh!"
+      
+      msg = f"\n⚠️ **THIỆT HẠI KÍP LÁI:** {names[casualty]} đã hy sinh!"
+      if self.check_crew_status():
+        msg += "\n❌ **THẤT BẠI:** Kíp lái chỉ còn <= 1 người, xe bị vô hiệu hóa hoàn toàn!"
+      return msg
     return ""
 
   async def execute_action(
@@ -237,7 +246,8 @@ class QuickChatFCSView(discord.ui.View):
       extra_info = f"🛠️ Đang sửa chữa dã chiến... (Còn lại {self.repair_cooldown} lượt)."
       result_title = "⚙️ BẢO TRÌ CHIẾN TRƯỜNG"
 
-      hit_taken = random.randint(15, 45)
+      # ĐÃ GIẢM SÁT THƯƠNG ĐỊCH 10% (10 - 35%)
+      hit_taken = random.randint(10, 35)
       self.hp = max(0, self.hp - hit_taken)
       extra_info += f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG: Gây ra {hit_taken}% sát thương!**"
       extra_info += self.apply_random_crew_casualty()
@@ -289,7 +299,7 @@ class QuickChatFCSView(discord.ui.View):
     )
 
     async def delete_temp_msg():
-      await asyncio.sleep(3)
+      await asyncio.sleep(2)
       try:
         await temp_msg.delete()
       except Exception:
@@ -301,21 +311,20 @@ class QuickChatFCSView(discord.ui.View):
     result_title = ""
     enemy_dmg = 0
 
-    # 1. HỆ THỐNG NGHỈ NGƠI & THAY THẾ/HỒI PHỤC KÍP LÁI
+    # 1. HỆ THỐNG NGHỈ NGƠI & THAY THẾ KÍP LÁI (ĐÃ GIẢM HP HỒI VỀ 15-30%)
     if action_type == "rest":
       ambush_chance = 45
       hit_by_enemy_first = random.randint(1, 100) <= ambush_chance
       if hit_by_enemy_first:
-        enemy_surprise_dmg = random.randint(15, 35)
+        enemy_surprise_dmg = random.randint(10, 25)
         self.hp = max(0, self.hp - enemy_surprise_dmg)
         extra_info = f"⚠️ **KẺ ĐỊCH PHỤC KÍCH KHÔNG KÍCH:** Gây ra {enemy_surprise_dmg}% sát thương!"
       else:
         extra_info = "🛡️ Cắm trại an toàn dã chiến. Yuri pha trà nóng động viên!"
 
-      heal_amount = random.randint(25, 45)
+      heal_amount = random.randint(15, 30)
       self.hp = min(100, self.hp + heal_amount)
       
-      # THAY THẾ TOÀN BỘ KÍP LÁI HY SINH
       replaced_crew = [k for k, v in self.crew.items() if not v]
       self.crew = {"commander": True, "gunner": True, "driver": True, "loader": True}
       
@@ -327,7 +336,7 @@ class QuickChatFCSView(discord.ui.View):
       self.current_mission = "Phòng thủ & Hồi sức"
       self.current_weather = random.choice(WEATHER_CONDITIONS)
 
-    # 2. HỆ THỐNG MÁY ĐO CỰ LY (RANGEFINDER)
+    # 2. HỆ THỐNG MÁY ĐO CỰ LY & ĐIỀU CHỈNH THƯỚC NGẮM (THÊM ±300m)
     elif action_type == "rangefinder":
       if not self.crew["commander"] and not self.crew["gunner"]:
         result_title = "❌ ĐO CỰ LY THẤT BẠI"
@@ -343,13 +352,23 @@ class QuickChatFCSView(discord.ui.View):
 
     elif action_type == "zero_up":
       self.aim_zeroing += 100
-      result_title = "🔼 NÂNG THƯỚC NGẮM DÃ CHIẾN"
+      result_title = "🔼 NÂNG THƯỚC NGẮM (+100m)"
       extra_info = f"Đã nâng thước ngắm lên **{self.aim_zeroing}m**."
 
     elif action_type == "zero_down":
       self.aim_zeroing = max(0, self.aim_zeroing - 100)
-      result_title = "🔽 HẠ THƯỚC NGẮM DÃ CHIẾN"
+      result_title = "🔽 HẠ THƯỚC NGẮM (-100m)"
       extra_info = f"Đã hạ thước ngắm xuống **{self.aim_zeroing}m**."
+
+    elif action_type == "zero_up_300":
+      self.aim_zeroing += 300
+      result_title = "⏫ NÂNG NÒNG NHANH (+300m)"
+      extra_info = f"Đã điều chỉnh góc nâng nòng nhanh lên **{self.aim_zeroing}m**."
+
+    elif action_type == "zero_down_300":
+      self.aim_zeroing = max(0, self.aim_zeroing - 300)
+      result_title = "⏬ HẠ NÒNG NHANH (-300m)"
+      extra_info = f"Đã điều chỉnh hạ nòng nhanh xuống **{self.aim_zeroing}m**."
 
     # 3. BẮN PHÁO CHÍNH / AUTOCANNON
     elif action_type == "fire":
@@ -391,7 +410,7 @@ class QuickChatFCSView(discord.ui.View):
               extra_info = f"Đạn xuyên thẳng giáp xe địch! Gây **-{base_dmg}% HP**."
             enemy_dmg = base_dmg
 
-    # 4. TÊN LỬA ATGM (BẢO VỆ BỞI APS / IRCM / ERA ĐỊCH)
+    # 4. TÊN LỬA ATGM
     elif action_type == "atgm":
       if not self.crew["gunner"]:
         result_title = "🚀 ATGM: BẮN TRƯỢT"
@@ -455,12 +474,12 @@ class QuickChatFCSView(discord.ui.View):
         extra_info = "Rút lui về sau gờ đất né làn đạn."
         self.current_mission = "Trinh sát chiến tuyến"
 
-    # 7. SỬA CHỮA DÃ CHIẾN
+    # 7. SỬA CHỮA DÃ CHIẾN (CHỈ CÒN 1 LƯỢT COOLDOWN)
     elif action_type == "repair":
-      self.repair_cooldown = 2
+      self.repair_cooldown = 1
       self.speed = "Đang đứng sửa chữa dã chiến"
-      result_title = "🛠️ SỬA CHỮA DÃ CHIẾN"
-      heal_amount = random.randint(20, 35)
+      result_title = "🛠️ SỬA CHỮA DÃ CHIẾN (1 LƯỢT)"
+      heal_amount = random.randint(15, 25)
       self.hp = min(100, self.hp + heal_amount)
       
       dead_crew = [k for k, v in self.crew.items() if not v]
@@ -476,10 +495,10 @@ class QuickChatFCSView(discord.ui.View):
     if weather_cleared:
       extra_info += "\n⛅ **Bầu trời chuyển biến:** Bão tố/Đêm tối đã chấm dứt!"
 
-    # KẺ ĐỊCH PHẢN CÔNG (APS / IRCM / ERA XE PLAYER)
+    # KẺ ĐỊCH PHẢN CÔNG (ĐÃ GIẢM SÁT THƯƠNG THƯỜNG 10%: 10-35%)
     if action_type not in ["move_backward", "repair", "rest"] and enemy_dmg < 100 and self.hp > 0:
       enemy_action_is_atgm = random.randint(1, 100) <= 40
-      hit_taken = random.randint(15, 45)
+      hit_taken = random.randint(10, 35)
       
       if enemy_action_is_atgm:
         if self.has_aps and random.randint(1, 100) <= 25:
@@ -540,12 +559,7 @@ class QuickChatFCSView(discord.ui.View):
         self.get_defense_string(self.tank_name)
     )
 
-    if self.hp <= 0:
-      embed_color = discord.Color.red()
-    elif "NON-PEN" in result_title or "MISS" in result_title:
-      embed_color = discord.Color.orange()
-    else:
-      embed_color = discord.Color.dark_red()
+    embed_color = discord.Color.red() if self.hp <= 0 else discord.Color.dark_red()
 
     embed = discord.Embed(
         title=result_title,
@@ -557,11 +571,12 @@ class QuickChatFCSView(discord.ui.View):
     embed.add_field(name="🌦️ Thời tiết", value=self.current_weather["name"], inline=True)
 
     if self.hp <= 0:
-      embed.add_field(name="⚠️ Trạng thái", value="❌ **Đã bị tiêu diệt hoàn toàn!**", inline=False)
+      embed.add_field(name="⚠️ Trạng thái", value="❌ **Đã bị tiêu diệt hoặc tổn thất kíp lái hoàn toàn!**", inline=False)
       self.clear_items()
 
     await interaction.message.edit(embed=embed, view=self)
 
+  # --- ROW 0: VŨ KHÍ & KHÓA CỰ LY ---
   @discord.ui.button(label="🎯 Khai hoả", style=discord.ButtonStyle.danger, row=0)
   async def btn_fire(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "fire", "Khai hỏa pháo chính")
@@ -574,25 +589,35 @@ class QuickChatFCSView(discord.ui.View):
   async def btn_rf(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "rangefinder", "Sử dụng máy đo cự ly")
 
-  @discord.ui.button(label="🔼 Nâng nòng (+100m)", style=discord.ButtonStyle.secondary, row=1)
+  # --- ROW 1: CHỈNH THƯỚC NGẮM (ĐÃ THÊM NÚT 300M NHANH) ---
+  @discord.ui.button(label="🔼 Nâng (+100m)", style=discord.ButtonStyle.secondary, row=1)
   async def btn_zero_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-    await self.execute_action(interaction, "zero_up", "Nâng thước ngắm")
+    await self.execute_action(interaction, "zero_up", "Nâng thước ngắm +100m")
 
-  @discord.ui.button(label="🔽 Hạ nòng (-100m)", style=discord.ButtonStyle.secondary, row=1)
+  @discord.ui.button(label="🔽 Hạ (-100m)", style=discord.ButtonStyle.secondary, row=1)
   async def btn_zero_down(self, interaction: discord.Interaction, button: discord.ui.Button):
-    await self.execute_action(interaction, "zero_down", "Hạ thước ngắm")
+    await self.execute_action(interaction, "zero_down", "Hạ thước ngắm -100m")
 
-  @discord.ui.button(label="🔭 Quan sát", style=discord.ButtonStyle.primary, row=1)
+  @discord.ui.button(label="⏫ Nâng nhanh (+300m)", style=discord.ButtonStyle.primary, row=1)
+  async def btn_zero_up_300(self, interaction: discord.Interaction, button: discord.ui.Button):
+    await self.execute_action(interaction, "zero_up_300", "Nâng nòng nhanh +300m")
+
+  @discord.ui.button(label="⏬ Hạ nhanh (-300m)", style=discord.ButtonStyle.primary, row=1)
+  async def btn_zero_down_300(self, interaction: discord.Interaction, button: discord.ui.Button):
+    await self.execute_action(interaction, "zero_down_300", "Hạ nòng nhanh -300m")
+
+  # --- ROW 2: TÁC CHIẾN & CƠ ĐỘNG ---
+  @discord.ui.button(label="🔭 Quan sát", style=discord.ButtonStyle.primary, row=2)
   async def btn_binocular(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "binocular", "Sử dụng ống nhòm trinh sát")
 
-  @discord.ui.button(label="🛠️ Sửa chữa", style=discord.ButtonStyle.secondary, row=2)
+  @discord.ui.button(label="🛠️ Sửa chữa (1 Lượt)", style=discord.ButtonStyle.secondary, row=2)
   async def btn_repair(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.execute_action(interaction, "repair", "Tiến hành sửa chữa dã chiến")
 
   @discord.ui.button(label="🏕️ Nghỉ ngơi", style=discord.ButtonStyle.success, row=2)
   async def btn_rest(self, interaction: discord.Interaction, button: discord.ui.Button):
-    await self.execute_action(interaction, "rest", "Nghỉ ngơi, thay thế kíp lái hy sinh và cắm trại")
+    await self.execute_action(interaction, "rest", "Nghỉ ngơi, bổ sung kíp lái")
 
   @discord.ui.button(label="🚀 Tiến lên", style=discord.ButtonStyle.success, row=2)
   async def btn_forward(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -705,11 +730,11 @@ async def y_sleep(ctx):
 
   ambush_chance = 45
   hit_by_enemy = random.randint(1, 100) <= ambush_chance
-  heal_amount = random.randint(20, 40)
+  heal_amount = random.randint(15, 30)
 
   msg = "🏕️ **[!YSLEEP]** Kíp chiến đấu chợp mắt nghỉ ngơi dã chiến...\n"
   if hit_by_enemy:
-    dmg = random.randint(15, 35)
+    dmg = random.randint(10, 25)
     msg += f"⚠️ **KẺ ĐỊCH PHỤC KÍCH: Gây ra {dmg}% sát thương!**\n"
   else:
     msg += f"🛡️ Nghỉ ngơi an toàn! Hồi phục thành công **+{heal_amount}% HP**.\n"
@@ -785,7 +810,7 @@ async def deploy(ctx, tank_model: str, sector: str = "Tuyến đầu"):
 @bot.command(name="fcs")
 async def fcs(ctx):
   guild_id = ctx.guild.id
-  tank_model = "t-90m"
+  tank_model = "bmpt"
   if guild_id in game_sessions and game_sessions[guild_id]["tanks"]:
     tank_model = game_sessions[guild_id]["tanks"][-1]["model"]
 
@@ -820,7 +845,7 @@ async def fcs(ctx):
 
 @bot.event
 async def on_ready():
-  print(f"✅ Yuri War Thunder Uncut Master Bot đã sẵn sàng: {bot.user.name}")
+  print(f"✅ Yuri War Thunder Master Bot (Fully Updated) đã sẵn sàng: {bot.user.name}")
 
 if __name__ == "__main__":
   keep_alive()
