@@ -47,23 +47,31 @@ TEAM_TANKS = {
 }
 
 YURI_MILITARY_SYSTEM_PROMPT = (
-    "Bạn là Yuri - Sĩ quan tham mưu kiêm pháo thủ thiết giáp. Hãy nói ngắn"
-    " gọn, sắc sảo, chuyên nghiệp về thông số kỹ thuật quân sự, không lan man"
-    " dài dòng."
+    "Bạn là Yuri - Sĩ quan tham mưu kiêm pháo thủ thiết giáp (kết hợp phong"
+    " cách game turn-based và War Thunder). Tính cách: sắc sảo, am hiểu thông"
+    " số kỹ thuật, thỉnh thoảng hơi ngượng ngùng. Hãy viết cực kỳ ngắn gọn, sắc"
+    " bén, dưới 3 câu."
 )
 
 
-# ================= 3. GIAO DIỆN KÍNH NGẮM FCS RÚT GỌN =================
+# ================= 3. GIAO DIỆN KÍNH NGẮM FCS & TURN-BASED =================
 def generate_fcs_view(
-    tank_name, speed="Đứng yên", ammo="APFSDS", hp=100, mission="Tiêu diệt địch"
+    tank_name,
+    speed="Đứng yên",
+    ammo="APFSDS",
+    hp=100,
+    mission="Tiêu diệt địch",
+    enemy_info="",
 ):
   hp_bar = "█" * (hp // 20) + "░" * (5 - (hp // 20))
-  return f"""[FCS: {tank_name.upper()}] | HP: [{hp_bar}] {hp}%
+  screen = f"""[FCS: {tank_name.upper()}] | HP: [{hp_bar}] {hp}%
 ⚙️ Cơ động: {speed} | 📦 Đạn: {ammo}
-🎯 Mục tiêu: {mission}
------------------------------------
-      [ - ] (Khóa mục tiêu 1650m)
-   /   |   \\"""
+🎯 Mục tiêu: {mission}"""
+  if enemy_info:
+    screen += f"\n-----------------------------------\n{enemy_info}"
+  else:
+    screen += "\n-----------------------------------\n      [ - ] (Khóa mục tiêu 1650m)\n   /   |   \\"
+  return screen
 
 
 class QuickChatFCSView(discord.ui.View):
@@ -82,6 +90,7 @@ class QuickChatFCSView(discord.ui.View):
         "Tiên phong đột phá",
     ]
     self.current_mission = random.choice(self.missions)
+    self.enemy_status_text = ""
 
   async def execute_action(
       self, interaction: discord.Interaction, action_type, action_desc
@@ -97,7 +106,6 @@ class QuickChatFCSView(discord.ui.View):
 
     await interaction.response.defer()
 
-    # Xử lý theo loại hành động QuickChat mới
     extra_info = ""
     result_title = ""
     enemy_dmg = 0
@@ -113,30 +121,35 @@ class QuickChatFCSView(discord.ui.View):
       extra_info = f"Kết quả: {wt[1]}"
       enemy_dmg = wt[2]
 
-    elif action_type =="binocular":
+    elif action_type == "binocular":
+      # Cơ chế Turn-base RPG: Phát hiện nhiều kẻ địch kèm thanh máu
       num_enemies = random.randint(1, 3)
-      result_title = "🔭 QUAN SÁT ỐNG NHÒM"
-      extra_info = (
-          f"Phát hiện **{num_enemies} mục tiêu** ẩn nấp phía trước qua kính"
-          " quang học!"
-      )
+      enemy_lines = []
+      for i in range(1, num_enemies + 1):
+        e_hp = random.choice([40, 70, 100])
+        e_bar = "█" * (e_hp // 20) + "░" * (5 - (e_hp // 20))
+        e_name = random.choice(["T-72B3", "Leopard 2", "M1A1 Abrams", "BMP-2"])
+        enemy_lines.append(
+            f" địch #{i} [{e_name}] | HP: [{e_bar}] {e_hp}%"
+        )
+
+      result_title = "🔭 QUAN SÁT ỐNG NHÒM (TRINH SÁT)"
+      self.enemy_status_text = "\n".join(enemy_lines)
+      extra_info = f"Phát hiện **{num_enemies} mục tiêu** trên chiến trường!"
       self.current_mission = "Tiêu diệt kẻ địch"
 
     elif action_type == "move_forward":
       self.speed = "Tiến lên tuyến đầu"
       result_title = "🏎️ CƠ ĐỘNG: TIẾN LÊN"
-      extra_info = (
-          "Xe tăng tăng tốc vượt chướng ngại vật, thay đổi góc ngắm bắn."
-      )
+      extra_info = "Tăng tốc vượt chướng ngại vật, tạo góc bắn mới."
       self.current_mission = "Tiên phong đột phá"
 
     elif action_type == "move_backward":
-      self.speed = "Lùi về vị trí ẩn nấp"
+      self.speed = "Lùi về ẩn nấp"
       result_title = "🔙 CƠ ĐỘNG: LÙI VỀ"
-      extra_info = "Rút lui về sau gờ đất để tránh làn đạn địch."
+      extra_info = "Rút lui về sau gờ đất né làn đạn."
       self.current_mission = "Trinh sát chiến tuyến"
 
-    # Phản công từ địch
     if action_type != "move_backward" and enemy_dmg < 80:
       hit_taken = random.choice([0, 15, 30])
       self.hp = max(0, self.hp - hit_taken)
@@ -145,35 +158,42 @@ class QuickChatFCSView(discord.ui.View):
       else:
         extra_info += "\n🛡️ **Địch phản công:** Bắn trượt!"
     else:
-      extra_info += "\n✨ Mục tiêu đã bị tê liệt, không thể phản công."
+      extra_info += "\n✨ Mục tiêu đã tê liệt."
 
     if self.hp <= 0:
       self.current_mission = "Đã bị bắn hạ (Wrecked)"
 
-    # Gọi Gemini tóm tắt siêu ngắn gọn
+    # Gọi Gemini với cơ chế tự động chuyển model nếu quá tải (3.6 -> 2.5)
     prompt = (
         f"Sĩ quan thực hiện '{action_desc}'. {extra_info}. Nhiệm vụ hiện tại:"
-        f" {self.current_mission}. Hãy viết báo cáo chiến sự cực kỳ ngắn gọn,"
-        " sắc sảo dưới 3 câu."
+        f" {self.current_mission}. Viết báo cáo chiến sự ngắn gọn, sắc sảo"
+        " đúng chất Yuri (dưới 3 câu)."
     )
-    try:
-      response = ai_client.models.generate_content(
-          model="gemini-3.6-flash",
-          contents=prompt,
-          config=types.GenerateContentConfig(
-              system_instruction=YURI_MILITARY_SYSTEM_PROMPT
-          ),
-      )
-      report = (
-          response.text
-          if response and response.text
-          else "Diễn biến giao tranh căng thẳng."
-      )
-    except Exception as e:
-      report = f"Lỗi: {e}"
+    report = "Giao tranh diễn ra ác liệt trên chiến tuyến."
+
+    models_to_try = ["gemini-3.6-flash", "gemini-2.5-flash"]
+    for m in models_to_try:
+      try:
+        response = ai_client.models.generate_content(
+            model=m,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=YURI_MILITARY_SYSTEM_PROMPT
+            ),
+        )
+        if response and response.text:
+          report = response.text
+          break
+      except Exception:
+        continue
 
     screen_art = generate_fcs_view(
-        self.tank_name, self.speed, self.ammo, self.hp, self.current_mission
+        self.tank_name,
+        self.speed,
+        self.ammo,
+        self.hp,
+        self.current_mission,
+        self.enemy_status_text,
     )
 
     embed = discord.Embed(
@@ -222,7 +242,7 @@ async def y_helps(ctx):
       title="📜 SỔ TAY CHIẾN DỊCH",
       description=(
           "1. `!campaign` - Mở bản đồ\n2. `!Yteam [Nga/Uka]` - Chọn phe\n3."
-          " `!deploy [tên xe]` - Xuất chiến\n4. `!fcs` - Mở kính ngắm chiến đấu"
+          " `!deploy [tên xe]` - Xuất chiến\n4. `!fcs` - Mở giao diện chiến đấu"
       ),
       color=discord.Color.dark_red(),
   )
@@ -261,8 +281,7 @@ async def y_team(ctx, team_name: str):
   embed = discord.Embed(
       title=f"🎖️ ĐÃ CHỌN PHE: {team_lower.upper()}",
       description=(
-          f"Khí tài trong kho: {tanks}\n\nGõ `!deploy [tên xe]` để đưa xe ra"
-          " trận!"
+          f"Khí tài trong kho: {tanks}\n\nGõ `!deploy [tên xe]` để xuất chiến!"
       ),
       color=discord.Color.blue(),
   )
@@ -307,7 +326,7 @@ async def fcs(ctx):
       mission="Tiêu diệt kẻ địch",
   )
   embed = discord.Embed(
-      title="🔭 KÍNH NGẮM FCS & QUICKCHAT",
+      title="🔭 KÍNH NGẮM FCS & TURN-BASED",
       description=(
           f"Yuri: '*Bắt đầu tác chiến với **{tank_model}**!*'\n```text\n"
           f"{initial_screen}\n```"
@@ -320,7 +339,7 @@ async def fcs(ctx):
 
 @bot.event
 async def on_ready():
-  print(f"✅ Yuri Bot đã sẵn sàng: {bot.user.name}")
+  print(f"✅ Yuri Bot Turn-Based Mode đã sẵn sàng: {bot.user.name}")
 
 
 if __name__ == "__main__":
