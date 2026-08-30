@@ -124,7 +124,6 @@ def check_queue_and_play(ctx):
 
   async def play_async():
     try:
-      # Lấy dữ liệu audio trực tiếp từ URL chuẩn đã xử lý
       info = await bot.loop.run_in_executor(
           None,
           lambda: yt_dlp.YoutubeDL({"format": "bestaudio/best"}).extract_info(
@@ -133,11 +132,8 @@ def check_queue_and_play(ctx):
       )
       stream_target = info["url"]
 
-      # Sử dụng file ffmpeg đóng gói sẵn trong thư mục dự án
-      ffmpeg_path = os.path.join(os.path.dirname(__file__), "ffmpeg")
-      source = discord.FFmpegPCMAudio(
-          stream_target, executable=ffmpeg_path, **FFMPEG_OPTIONS
-      )
+      # Sử dụng FFmpeg hệ thống (đã được nixpacks.toml cài sẵn)
+      source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
 
       ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
       await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
