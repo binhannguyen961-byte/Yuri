@@ -132,7 +132,7 @@ def check_queue_and_play(ctx):
       )
       stream_target = info["url"]
 
-      # Sử dụng FFmpeg hệ thống (đã được nixpacks.toml cài sẵn)
+      # Dùng FFmpeg chuẩn từ hệ thống Railway (thông qua nixpacks.toml)
       source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
 
       ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
