@@ -1,12 +1,12 @@
 import asyncio
 import os
+import random
 import threading
 import discord
 from discord.ext import commands
 from flask import Flask
 from google import genai
 from google.genai import types
-import yt_dlp
 
 # ================= 1. CẤU HÌNH WEB SERVER (FLASK) =================
 app = Flask(__name__)
@@ -14,7 +14,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-  return "Yuri (DDLC) is quietly reading..."
+  return "Yuri's Command Center is operational..."
 
 
 def run_flask():
@@ -36,377 +36,244 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ================= 3. CẤU HÌNH PHÁT NHẠC & QUẢN LÝ VOICE =================
-YTDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "extractflat": True,
-    "noplaylist": False,
-    "quiet": True,
-}
-
-FFMPEG_OPTIONS = {
-    "before_options": (
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-    ),
-    "options": "-vn",
-}
-
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
-queues = {}
-loop_status = {}
-auto_disconnect_tasks = {}
+# Lưu trữ trạng thái game chiến dịch vĩ mô của từng server/người chơi
+game_sessions = {}
 
 
-async def auto_stop_after_timeout(ctx, delay=300):
-  """Hàm chờ 5 phút để ngắt voice nếu phòng trống"""
-  await asyncio.sleep(delay)
-  guild_id = ctx.guild.id
+# ================= 3. GIAO DIỆN NÚT BẤM 2.5D (TACTICAL VIEWER) =================
+class TacticalControlView(discord.ui.View):
 
-  if ctx.voice_client:
-    members = [m for m in ctx.voice_client.channel.members if not m.bot]
-    if len(members) == 0:
-      if guild_id in queues:
-        queues[guild_id].clear()
-      loop_status[guild_id] = False
-      if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-        ctx.voice_client.stop()
-      await ctx.voice_client.disconnect()
-      await ctx.send(
-          "⌛ **Không có ai trong phòng voice quá 5 phút, Yuri xin phép rời"
-          " phòng và dừng phát nhạc nhé...**"
+  def __init__(self, ctx, unit_name, sector):
+    super().__init__(timeout=180)
+    self.ctx = ctx
+    self.unit_name = unit_name
+    self.sector = sector
+
+  async def process_action(self, interaction: discord.Interaction, action: str):
+    if interaction.user != self.ctx.author:
+      return await interaction.response.send_message(
+          "⚠️ Đây không phải quyền ra lệnh của bạn!", ephemeral=True
       )
 
-  if guild_id in auto_disconnect_tasks:
-    del auto_disconnect_tasks[guild_id]
+    await interaction.response.defer()
 
+    # Dùng Gemini AI để mô phỏng diễn biến trận chiến 2.5D dựa trên lệnh của sĩ quan
+    prompt = (
+        f"Sĩ quan {interaction.user.name} đang chỉ huy đơn vị {self.unit_name}"
+        f" tại khu vực {self.sector} với chiến lệnh: '{action}'. "
+        "Hãy đóng vai trò là hệ thống mô phỏng chiến trường 2.5D kiểu quân sự,"
+        " viết một bản báo cáo ngắn gọn (khoảng 3-4 câu) mô tả diễn biến chiến"
+        " đấu, hiệu quả hỏa lực, thiệt hại của địch và tình trạng hiện tại của"
+        " đơn vị theo phong cách nghiêm túc, kịch tính."
+    )
 
-def check_queue_and_play(ctx):
-  guild_id = ctx.guild.id
-
-  # 1. KIỂM TRA SỐ LƯỢNG THÀNH VIÊN TRONG VOICE
-  if ctx.voice_client and ctx.voice_client.channel:
-    members = [m for m in ctx.voice_client.channel.members if not m.bot]
-
-    if len(members) == 0:
-      if guild_id not in auto_disconnect_tasks:
-        asyncio.run_coroutine_threadsafe(
-            ctx.send(
-                "😴 Không có ai trong phòng voice... Yuri sẽ tạm ngưng và tự"
-                " rời phòng sau **5 phút** nếu không có ai quay lại."
-            ),
-            bot.loop,
-        )
-        task = asyncio.run_coroutine_threadsafe(
-            auto_stop_after_timeout(ctx, 300), bot.loop
-        )
-        auto_disconnect_tasks[guild_id] = task
-      return
-    else:
-      if guild_id in auto_disconnect_tasks:
-        auto_disconnect_tasks[guild_id].cancel()
-        del auto_disconnect_tasks[guild_id]
-
-  # 2. XỬ LÝ LẶP BÀI HOẶC CHUYỂN BÀI
-  if loop_status.get(guild_id, False) and hasattr(
-      ctx.voice_client, "current_song"
-  ):
-    song = ctx.voice_client.current_song
-  elif guild_id in queues and len(queues[guild_id]) > 0:
-    song = queues[guild_id].pop(0)
-    ctx.voice_client.current_song = song
-  else:
-    ctx.voice_client.current_song = None
-    return
-
-  async def play_async():
     try:
-      info = await bot.loop.run_in_executor(
-          None,
-          lambda: yt_dlp.YoutubeDL({"format": "bestaudio/best"}).extract_info(
-              song["webpage_url"], download=False
+      response = ai_client.models.generate_content(
+          model="gemini-3.6-flash",
+          contents=prompt,
+          config=types.GenerateContentConfig(
+              system_instruction=(
+                  "Bạn là hệ thống máy tính chiến thuật quân sự tối tân."
+              )
           ),
       )
-      stream_target = info["url"]
-
-      # Dùng FFmpeg chuẩn từ hệ thống Railway (thông qua nixpacks.toml)
-      source = discord.FFmpegPCMAudio(stream_target, **FFMPEG_OPTIONS)
-
-      ctx.voice_client.play(source, after=lambda e: check_queue_and_play(ctx))
-      await ctx.send(f"☕ Đang phát nhạc giúp bạn nè... **{song['title']}**")
-    except Exception as e:
-      await ctx.send(
-          f"⚠️ **Không thể phát bài {song.get('title', '')}:** `{e}`. Đang thử"
-          " chuyển bài tiếp theo..."
+      report = (
+          response.text
+          if response and response.text
+          else "Cuộc giao tranh diễn ra ác liệt nhưng chưa có kết quả rõ ràng."
       )
-      check_queue_and_play(ctx)
+    except Exception as e:
+      report = f"Lỗi hệ thống chiến thuật: {e}"
 
-  asyncio.run_coroutine_threadsafe(play_async(), bot.loop)
+    embed = discord.Embed(
+        title=f"📊 BÁO CÁO CHIẾN TRƯỜNG 2.5D - Lệnh: {action}",
+        description=report,
+        color=discord.Color.dark_red(),
+    )
+    embed.add_field(name="Đơn vị chủ lực", value=self.unit_name, inline=True)
+    embed.add_field(name="Khu vực tác chiến", value=self.sector, inline=True)
+
+    for child in self.children:
+      child.disabled = True
+
+    await interaction.message.edit(embed=embed, view=self)
+
+  @discord.ui.button(
+      label="🔥 Pháo kích tổng lực", style=discord.ButtonStyle.danger
+  )
+  bt_fire(self, interaction, button):
+    await self.process_action(interaction, "Pháo kích tổng lực")
+
+  @discord.ui.button(
+      label="🛡️ Phòng thủ bọc thép", style=discord.ButtonStyle.primary
+  )
+  bt_defend(self, interaction, button):
+    await self.process_action(interaction, "Phòng thủ bọc thép kiên cố")
+
+  @discord.ui.button(
+      label="⚡ Đột phá bọc sườn", style=discord.ButtonStyle.success
+  )
+  bt_flank(self, interaction, button):
+    await self.process_action(interaction, "Đột phá bọc sườn chớp nhoáng")
 
 
-# ================= 4. EVENT THEO DÕI VOICE STATE =================
-@bot.event
-async def on_voice_state_update(member, before, after):
-  if member.bot:
-    return
-
-  for voice_client in bot.voice_clients:
-    guild_id = voice_client.guild.id
-    channel = voice_client.channel
-    members = [m for m in channel.members if not m.bot]
-
-    if len(members) == 0:
-      if guild_id not in auto_disconnect_tasks:
-        task = asyncio.create_task(
-            auto_stop_after_timeout(
-                await bot.get_context(
-                    await channel.send(
-                        "😴 Mọi người đã rời phòng voice. Yuri sẽ tự ngắt"
-                        " kết nối sau **5 phút**..."
-                    )
-                ),
-                300,
-            )
-        )
-        auto_disconnect_tasks[guild_id] = task
-    else:
-      if guild_id in auto_disconnect_tasks:
-        auto_disconnect_tasks[guild_id].cancel()
-        del auto_disconnect_tasks[guild_id]
-
-
-# ================= 5. LỆNH HELP (!Yhelps) =================
+# ================= 4. LỆNH HƯỚNG DẪN (!Yhelps & !Y2.5Dhelps) =================
 @bot.command(name="Yhelps")
-async def custom_help(ctx):
+async def y_helps(ctx):
   embed = discord.Embed(
-      title="📖 Câu Lạc Bộ Văn Học - Sổ Tay Hướng Dẫn Của Yuri",
+      title="🗺️ SỔ TAY CHIẾN DỊCH VĨ MÔ (World Conqueror Style)",
       description=(
-          "X-Xin lỗi vì làm phiền... Dưới đây là các lệnh bạn có thể dùng:"
+          "Hướng dẫn điều phối lực lượng và quản lý chiến dịch quân sự toàn"
+          " cầu:"
       ),
-      color=discord.Color.from_rgb(108, 52, 131),
+      color=discord.Color.blue(),
   )
   embed.add_field(
-      name="🎶 **Âm Nhạc (Hỗ trợ SoundCloud & Playlist)**",
+      name="1. Khởi động chiến dịch",
       value=(
-          "`!join` - Mời bot vào voice\n"
-          "`!play [link/playlist]` - Phát nhạc hoặc cả Playlist\n"
-          "`!pause` | `!resume` | `!skip` | `!loop` | `!queue` | `!stop`"
+          "`!campaign [tên chiến dịch]` - Mở bản đồ chiến sự mới.\nVí dụ:"
+          " `!campaign Đông Âu 2026`"
       ),
       inline=False,
   )
   embed.add_field(
-      name="🔮 **Trò Chuyện AI**",
-      value="`!ai [nội dung]` - Trò chuyện với Yuri (Gemini 3.6 Flash)",
+      name="2. Triển khai khí tài",
+      value=(
+          "`!deploy [Tên khí tài] [Khu vực]` - Đưa xe tăng, pháo binh ra mặt"
+          " trận.\nVí dụ: `!deploy T-90M SectorA`"
+      ),
+      inline=False,
+  )
+  embed.add_field(
+      name="3. Kiểm tra hậu cần",
+      value=(
+          "`!status` - Kiểm tra thông số tài nguyên, đạn dược và trạng thái"
+          " quân đội."
+      ),
       inline=False,
   )
   await ctx.send(embed=embed)
 
 
-# ================= 6. CÁC LỆNH PHÁT NHẠC =================
-@bot.command(name="join")
-async def join(ctx):
-  if not ctx.author.voice:
-    return await ctx.send("❌ Bạn phải vào phòng Voice Channel trước nhé...")
-
-  channel = ctx.author.voice.channel
-  try:
-    if ctx.voice_client:
-      await ctx.voice_client.move_to(channel)
-    else:
-      await channel.connect()
-    await ctx.send(f"☕ Yuri đã vào **{channel.name}**...")
-  except Exception as e:
-    await ctx.send(f"⚠️ **Không thể kết nối Voice Channel:** `{e}`")
-
-
-@bot.command(name="play")
-async def play(ctx, url: str):
-  if not ctx.voice_client:
-    await ctx.invoke(join)
-    if not ctx.voice_client:
-      return
-
-  async with ctx.typing():
-    try:
-      data = await bot.loop.run_in_executor(
-          None, lambda: ytdl.extract_info(url, download=False)
-      )
-    except Exception as e:
-      return await ctx.send(
-          f"❌ Không thể lấy thông tin bài hát/playlist: `{e}`"
-      )
-
-    guild_id = ctx.guild.id
-    if guild_id not in queues:
-      queues[guild_id] = []
-
-    # XỬ LÝ PLAYLIST
-    if "entries" in data and len(data["entries"]) > 0:
-      playlist_title = data.get("title", "Playlist")
-      added_count = 0
-
-      for entry in data["entries"]:
-        if entry:
-          raw_url = (
-              entry.get("webpage_url")
-              or entry.get("url")
-              or entry.get("permalink_url")
-          )
-          if raw_url:
-            if not raw_url.startswith("http"):
-              song_url = f"https://soundcloud.com/{raw_url.lstrip('/')}"
-            else:
-              song_url = raw_url
-
-            song_title = entry.get("title", "Bài hát không tên")
-            queues[guild_id].append(
-                {"webpage_url": song_url, "title": song_title}
-            )
-            added_count += 1
-
-      if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
-        check_queue_and_play(ctx)
-        await ctx.send(
-            f"🎶 Đã thêm **{added_count}** bài từ playlist **{playlist_title}**"
-            " vào danh sách phát."
-        )
-      else:
-        await ctx.send(
-            f"📝 Đã thêm **{added_count}** bài hát từ playlist"
-            f" **{playlist_title}** vào hàng đợi."
-        )
-
-    # XỬ LÝ BÀI HÁT ĐƠN LẺ
-    else:
-      song_url = data.get("webpage_url") or data.get("url") or url
-      song = {
-          "webpage_url": song_url,
-          "title": data.get("title", "Bài hát không tên"),
-      }
-
-      if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-        queues[guild_id].append(song)
-        await ctx.send(
-            f"📝 Đã thêm **{song['title']}** vào danh sách chờ"
-            f" (#{len(queues[guild_id])})."
-        )
-      else:
-        queues[guild_id].insert(0, song)
-        check_queue_and_play(ctx)
+@bot.command(name="Y2.5Dhelps")
+async def y_25d_helps(ctx):
+  embed = discord.Embed(
+      title="🎯 HƯỚNG DẪN MINI-GAME TÁC CHIẾN 2.5D (Góc nhìn Sĩ quan)",
+      description="Hướng dẫn trực tiếp điều khiển chiến trường thời gian thực:",
+      color=discord.Color.orange(),
+  )
+  embed.add_field(
+      name="1. Mở phòng tác chiến 2.5D",
+      value=(
+          "`!tactical [Tên đơn vị] [Khu vực]`\nVí dụ: `!tactical 2S7-Pion"
+          " Tiền_Tuyến_Bắc`"
+      ),
+      inline=False,
+  )
+  embed.add_field(
+      name="2. Hệ thống ra lệnh trực quan",
+      value=(
+          "Khi lệnh được bật, một bảng thông tin 2.5D xuất hiện kèm các nút"
+          " bấm tương tác:\n- **Pháo kích tổng lực:** Tiêu diệt diện rộng nhưng"
+          " tốn đạn.\n- **Phòng thủ bọc thép:** Giảm thiểu thiệt hại trước hỏa"
+          " lực địch.\n- **Đột phá bọc sườn:** Tấn công bất ngờ gây hỗn loạn hàng"
+          " ngũ đối phương."
+      ),
+      inline=False,
+  )
+  await ctx.send(embed=embed)
 
 
-@bot.command(name="queue")
-async def show_queue(ctx):
+# ================= 5. CÁC LỆNH CHIẾN DỊCH VĨ MÔ =================
+@bot.command(name="campaign")
+async def campaign(ctx, *, name: str = "Mặt trận chung"):
   guild_id = ctx.guild.id
-  if guild_id not in queues or len(queues[guild_id]) == 0:
-    return await ctx.send("📜 Hàng đợi hiện đang trống.")
-  msg = "**📜 Danh sách bài hát chờ:**\n"
-  for idx, song in enumerate(queues[guild_id], start=1):
-    msg += f"`{idx}.` {song['title']}\n"
-    if idx >= 25:
-      msg += f"...và còn {len(queues[guild_id]) - 25} bài nữa."
-      break
-  await ctx.send(msg)
+  game_sessions[guild_id] = {
+      "name": name,
+      "fuel": 1000,
+      "ammo": 500,
+      "units": [],
+  }
+  embed = discord.Embed(
+      title=f"🌐 CHIẾN DỊCH KHỞI ĐỘNG: {name}",
+      description=(
+          "Bộ Tổng tham mưu đã thiết lập bản đồ chiến sự thành công!\nTrạng"
+          " thái tài nguyên ban đầu:\n⛽ **Nhiên liệu:** 1000 | 📦 **Đạn dược:**"
+          " 500"
+      ),
+      color=discord.Color.green(),
+  )
+  await ctx.send(embed=embed)
 
 
-@bot.command(name="skip")
-async def skip(ctx):
-  if ctx.voice_client and (
-      ctx.voice_client.is_playing() or ctx.voice_client.is_paused()
-  ):
-    loop_status[ctx.guild.id] = False
-    ctx.voice_client.stop()
-    await ctx.send("⏭️ Đã bỏ qua bài hát.")
-
-
-@bot.command(name="pause")
-async def pause(ctx):
-  if ctx.voice_client and ctx.voice_client.is_playing():
-    ctx.voice_client.pause()
-    await ctx.send("⏸️ Đã tạm dừng.")
-
-
-@bot.command(name="resume")
-async def resume(ctx):
-  if ctx.voice_client and ctx.voice_client.is_paused():
-    ctx.voice_client.resume()
-    await ctx.send("▶️ Tiếp tục phát nhạc.")
-
-
-@bot.command(name="loop")
-async def loop(ctx):
+@bot.command(name="deploy")
+async def deploy(ctx, unit: str, sector: str):
   guild_id = ctx.guild.id
-  current = loop_status.get(guild_id, False)
-  loop_status[guild_id] = not current
-  await ctx.send(f"Lặp lại bài hiện tại: **{'Bật' if not current else 'Tắt'}**.")
+  if guild_id not in game_sessions:
+    game_sessions[guild_id] = {
+        "name": "Mặt trận mặc định",
+        "fuel": 1000,
+        "ammo": 500,
+        "units": [],
+    }
+
+  game_sessions[guild_id]["units"].append({"unit": unit, "sector": sector})
+  await ctx.send(
+      f"🚀 **Điều phối thành công!** Đơn vị **{unit}** đã tiến vào giữ chốt"
+      f" tại khu vực **{sector}**."
+  )
 
 
-@bot.command(name="stop")
-async def stop(ctx):
+@bot.command(name="status")
+async def status(ctx):
   guild_id = ctx.guild.id
-  if guild_id in queues:
-    queues[guild_id].clear()
-  loop_status[guild_id] = False
-
-  if guild_id in auto_disconnect_tasks:
-    auto_disconnect_tasks[guild_id].cancel()
-    del auto_disconnect_tasks[guild_id]
-
-  if ctx.voice_client:
-    ctx.voice_client.stop()
-    await ctx.voice_client.disconnect()
-    await ctx.send("⏹️ Đã dừng phát và rời phòng.")
-
-
-# ================= 7. LỆNH AI GEMINI (CỐ ĐỊNH 3.6 FLASH) =================
-@bot.command(name="ai")
-async def ai_chat(ctx, *, prompt: str):
-  async with ctx.typing():
-    system_instruction = (
-        "Bạn là Yuri trong Doki Doki Literature Club. "
-        "Trả lời ngượng ngùng, rụt rè, hướng nội và cực kỳ lịch sự, từ ngữ chau"
-        " chuốt, ngắn gọn. Xưng 'mình' hoặc 'tớ' hay 'Yuri', gọi người dùng là"
-        " 'cậu'."
+  if guild_id not in game_sessions:
+    return await ctx.send(
+        "❌ Chưa có chiến dịch nào được khởi động. Hãy dùng `!campaign` trước"
+        " nhé!"
     )
 
-    config = types.GenerateContentConfig(system_instruction=system_instruction)
+  session = game_sessions[guild_id]
+  unit_list = (
+      ", ".join([f"{u['unit']} ({u['sector']})" for u in session["units"]])
+      if session["units"]
+      else "Chưa có đơn vị triển khai"
+  )
 
-    try:
-      response = await bot.loop.run_in_executor(
-          None,
-          lambda: ai_client.models.generate_content(
-              model="gemini-3.6-flash", contents=prompt, config=config
-          ),
-      )
-
-      if response and hasattr(response, "text") and response.text:
-        reply_text = response.text
-        if len(reply_text) > 1900:
-          for chunk in [
-              reply_text[i : i + 1900] for i in range(0, len(reply_text), 1900)
-          ]:
-            await ctx.send(chunk)
-        else:
-          await ctx.send(reply_text)
-      else:
-        await ctx.send(
-            "💬 X-Xin lỗi bạn... Tâm trí mình đang hơi rối bời một chút nên chưa"
-            " thể trả lời ngay được..."
-        )
-
-    except Exception as e:
-      await ctx.send(
-          f"💬 X-Xin lỗi bạn... Có lỗi xảy ra khi gọi AI:\n`Chi tiết: {e}`"
-      )
+  embed = discord.Embed(
+      title=f"📊 TRẠNG THÁI CHIẾN DỊCH: {session['name']}",
+      color=discord.Color.gold(),
+  )
+  embed.add_field(name="⛽ Nhiên liệu", value=session["fuel"], inline=True)
+  embed.add_field(name="📦 Đạn dược", value=session["ammo"], inline=True)
+  embed.add_field(name="🛡️ Đội hình hiện tại", value=unit_list, inline=False)
+  await ctx.send(embed=embed)
 
 
-# ================= 8. KHI BOT SẴN SÀNG =================
+# ================= 6. LỆNH MỞ PHÒNG TÁC CHIẾN 2.5D =================
+@bot.command(name="tactical")
+async def tactical(ctx, unit_name: str, sector: str):
+  embed = discord.Embed(
+      title="📡 PHÒNG TÁC CHIẾN 2.5D - TRUNG TÂM CHỈ HUY",
+      description=(
+          f"Đơn vị chủ lực **{unit_name}** đang tiếp cận khu vực **{sector}**."
+          " Trinh sát phát hiện mục tiêu địch trong tầm ngắm. Sĩ quan"
+          f" **{ctx.author.name}** hãy đưa ra chiến lệnh tác chiến ngay lập"
+          " tức!"
+      ),
+      color=discord.Color.purple(),
+  )
+  view = TacticalControlView(ctx, unit_name, sector)
+  await ctx.send(embed=embed, view=view)
+
+
+# ================= 7. KHI BOT SẴN SÀNG =================
 @bot.event
 async def on_ready():
-  print(f"✅ Bot Yuri đã hoạt động: {bot.user.name}")
+  print(f"✅ Bot Yuri Chiến Thuật đã hoạt động: {bot.user.name}")
 
 
 if __name__ == "__main__":
