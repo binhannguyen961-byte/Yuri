@@ -163,9 +163,15 @@ class QuickChatFCSView(discord.ui.View):
       ])
       enemy_dmg = enemy_action[2]
       self.hp = max(0, self.hp - enemy_dmg)
-      enemy_reaction = f"\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG:** {enemy_action[0]} *{enemy_action[1]}* (Nhận -{enemy_dmg}% HP)"
+      enemy_reaction = (
+          "\n\n⚠️ **KẺ ĐỊCH PHẢN CÔNG:** {} *{}* (Nhận -{}% HP)".format(
+              enemy_action[0], enemy_action[1], enemy_dmg
+          )
+      )
     else:
-      enemy_reaction = "\n\n✨ **Mục tiêu đã bị tiêu diệt hoàn toàn, không thể phản công!**"
+      enemy_reaction = (
+          "\n\n✨ **Mục tiêu đã bị tiêu diệt hoàn toàn, không thể phản công!**"
+      )
 
     if self.hp <= 0:
       self.status = "Bị phá hủy (Wrecked)"
@@ -207,10 +213,9 @@ class QuickChatFCSView(discord.ui.View):
     )
 
     embed = discord.Embed(
-        title=f"🔭 KÍNH NGẮM FCS — Lượt đánh: {action_desc}",
-        description=(
-            f"**Kết quả bắn:** {wt_event[0]} - *{wt_event[1]}*"
-            f"{enemy_reaction}\n\n*{report}*\n```text\n{screen_art}\n```"
+        title="🔭 KÍNH NGẮM FCS — Lượt đánh: {}".format(action_desc),
+        description="**Kết quả bắn:** {} - *{}*{}\n\n*{}*\n```text\n{}\n```".format(
+            wt_event[0], wt_event[1], enemy_reaction, report, screen_art
         ),
         color=discord.Color.dark_red(),
     )
@@ -277,4 +282,4 @@ class QuickChatFCSView(discord.ui.View):
         title="🔧 KHOA HỤC KỸ THUẬT - SỬA CHỮA KHẨN CẤP",
         description=(
             "Đội ngũ kỹ thuật viên dã chiến đã khẩn trương hàn gắn vết thủng và"
-            f" hồi phục hệ thống!\n```text\n{screen_art}\n
+            " hồi phục hệ thống!\n```text\n{}\n
