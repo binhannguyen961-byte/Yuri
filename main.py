@@ -60,7 +60,6 @@ class TacticalControlView(discord.ui.View):
 
     await interaction.response.defer()
 
-    # Dùng Gemini AI để mô phỏng diễn biến trận chiến 2.5D dựa trên lệnh của sĩ quan
     prompt = (
         f"Sĩ quan {interaction.user.name} đang chỉ huy đơn vị {self.unit_name}"
         f" tại khu vực {self.sector} với chiến lệnh: '{action}'. "
@@ -104,19 +103,25 @@ class TacticalControlView(discord.ui.View):
   @discord.ui.button(
       label="🔥 Pháo kích tổng lực", style=discord.ButtonStyle.danger
   )
-  bt_fire(self, interaction, button):
+  async def bt_fire(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.process_action(interaction, "Pháo kích tổng lực")
 
   @discord.ui.button(
       label="🛡️ Phòng thủ bọc thép", style=discord.ButtonStyle.primary
   )
-  bt_defend(self, interaction, button):
+  async def bt_defend(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.process_action(interaction, "Phòng thủ bọc thép kiên cố")
 
   @discord.ui.button(
       label="⚡ Đột phá bọc sườn", style=discord.ButtonStyle.success
   )
-  bt_flank(self, interaction, button):
+  async def bt_flank(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.process_action(interaction, "Đột phá bọc sườn chớp nhoáng")
 
 
