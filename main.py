@@ -34,7 +34,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # --- 2. CẤU HÌNH AI GEMINI ---
 genai.configure(api_key=GEMINI_API_KEY)
 yuri_model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-3.5-flash",
     system_instruction=(
         "Bạn là Yuri từ câu lạc bộ văn học Doki Doki Literature Club. "
         "Tính cách: Dịu dàng, lịch sự, sâu sắc, hơi rụt rè nhưng cực kỳ đam mê văn học. "
