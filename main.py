@@ -444,7 +444,7 @@ async def on_message(message):
 
 # ================= 7. BẢNG LỆNH & CHỨC NĂNG =================
 
-@bot.command(name='Ahelps', aliases=['ahelps', 'anhelps', 'helps'])
+@bot.command(name='Ahelps', aliases=['ajhelps', 'anhelps', 'helps'])
 async def ahelps_command(ctx):
     embed = discord.Embed(
         title="⚙️ Bảng Lệnh — An Nguyễn",
