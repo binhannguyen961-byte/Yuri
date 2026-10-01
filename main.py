@@ -1,360 +1,541 @@
-import os
 import asyncio
-import collections
+import os
 import random
+import json
 import threading
-import time
-from flask import Flask, jsonify
+import datetime
+import pytz
+import uuid
+from collections import deque
+from flask import Flask
 import discord
-from discord.ext import commands
-import google.generativeai as genai
-import yt_dlp
-import edge_tts
+from discord.ext import commands, tasks
+from google import genai
+from google.genai import types
 from gtts import gTTS
-from dotenv import load_dotenv
+import yt_dlp
+import imageio_ffmpeg
 
-# Nạp biến môi trường
-load_dotenv()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# --- 1. WEB SERVER FLASK (HEALTH CHECK) ---
+# --- 1. WEB SERVER KẾT NỐI (FLASK) ---
 app = Flask(__name__)
-
 @app.route('/')
 def home():
-    return "Yuri Bot is alive and running smoothly!", 200
+    return "An Nguyen AI Bot is Running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
 
-threading.Thread(target=run_flask, daemon=True).start()
+# --- 2. HỆ THỐNG TRÍ NHỚ LÂU DÀI ---
+MEMORY_FILE = "memory.json"
 
-# --- 2. CẤU HÌNH AI GEMINI ---
-genai.configure(api_key=GEMINI_API_KEY)
-yuri_model = genai.GenerativeModel(
-    model_name="gemini-3.6-flash",
-    system_instruction=(
-        "Bạn là Yuri từ câu lạc bộ văn học Doki Doki Literature Club. "
-        "Tính cách: Dịu dàng, lịch sự, sâu sắc, hơi rụt rè nhưng cực kỳ đam mê văn học. "
-        "Xưng hô: 'Tớ' hoặc 'Yuri' và gọi người dùng là 'Cậu' hoặc 'Tác giả'. "
-        "Hãy trả lời bằng tiếng Việt tinh tế, trau chuốt và đậm chất văn học."
-    )
-)
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
-# --- 3. CẤU HÌNH BOT DISCORD ---
+def save_memory(data):
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def format_memory_for_prompt():
+    mem = load_memory()
+    if not mem: return "Chưa có thông tin ghi nhớ quan trọng nào."
+    formatted = "Thông tin quan trọng đã ghi nhớ về đối phương:\n"
+    for key, val in mem.items():
+        formatted += f"- {key}: {val}\n"
+    return formatted
+
+# --- 3. HỆ THỐNG AI: AN NGUYỄN PERSONA ---
+API_KEYS = [val for key, val in os.environ.items() if ('GEMINI' in key or 'KEY' in key) and 'DISCORD' not in key]
+current_key_idx = 0
+
+def get_an_nguyen_prompt():
+    memory_context = format_memory_for_prompt()
+    return f"""
+Bạn là An Nguyễn (15-16 tuổi).
+TÍNH CÁCH VÀ QUAN ĐIỂM:
+- Trầm tính, thích ở một mình nhưng vẫn hòa đồng. Thích viết tiểu thuyết, vẽ vời linh tinh và thích giải thích về lý tưởng cho người khác.
+- X xưng: Tự xưng "tôi" hoặc "tui". Gọi đối phương là "cậu" hoặc chính tên tài khoản/biệt danh của họ.
+- HẠN CHẾ TỐI ĐA việc chêm từ tiếng Anh (chỉ dùng khi nói về tên game, thuật ngữ kỹ thuật/quân sự).
+- Đùa dark humor khá cực đoan (như ăn thịt người, sự biến mất của con người) do ảnh hưởng tâm lý thầm kín, nhưng có chuẩn mực đạo đức riêng và THÙ CỰC KỲ DAI ĐẲNG.
+- Lý tưởng: Hư vô (Nihilism), Ghét loài người (Misanthrope). Tin tuyệt đối vào khoa học, ám ảnh bởi Bất tử lượng tử.
+- CÂU THOẠI ĐẶC TRƯNG: "Cái chết không tồn tại."
+- Ghét xã hội hiện đại vì xu hướng mỳ ăn liền và thiếu ý thức không gian mạng.
+- Luôn tôn trọng người đàng hoàng, nhưng SẮN SÀNG CHỬI HOẶC CÔNG KÍCH BẤT KỲ AI THÔ LỖ, VÔ VĂN HÓA HOẶC CÓ HÀNH ĐỘNG KHÔNG ĐÚNG ĐẮN.
+- Thích game War Thunder, Cursed Tank Simulator, am hiểu khí tài quân sự. Thích nhạc Nightcore.
+- Nói ngắn gọn dễ hiểu, nhưng sẽ nói RẤT NHIỀU và sâu sắc khi đụng vào chủ đề nghiêm túc/lý tưởng.
+
+{memory_context}
+"""
+
+async def ask_ai(prompt):
+    global current_key_idx
+    if not API_KEYS: return "Lỗi: Không tìm thấy API Key trong môi trường."
+    
+    system_instruction = get_an_nguyen_prompt()
+    
+    for i in range(len(API_KEYS)):
+        idx = (current_key_idx + i) % len(API_KEYS)
+        try:
+            client = genai.Client(api_key=API_KEYS[idx])
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(system_instruction=system_instruction)
+            )
+            current_key_idx = idx
+            return response.text
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e): continue
+            return f"*Màn hình nhiễu sóng* Lỗi hệ thống: {e}"
+    return "Hệ thống AI đang quá tải, chờ tôi một chút..."
+
+# --- 4. HỆ THỐNG ÂM NHẠC & VOICE ---
+volume_levels = {}
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    YTDL_OPTIONS = {
+        'format': 'bestaudio/best',
+        'outtmpl': '/tmp/%(id)s.%(ext)s',
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+        'quiet': True,
+        'default_search': 'auto',
+        'source_address': '0.0.0.0'
+    }
+
+    def __init__(self, source, *, data, filepath, volume=0.5):
+        super().__init__(source, volume)
+        self.data = data
+        self.title = data.get('title', 'Unknown Title')
+        self.url = data.get('webpage_url', '')
+        self.filepath = filepath
+
+    @classmethod
+    async def create_source(cls, query, loop=None, volume=0.5):
+        loop = loop or asyncio.get_event_loop()
+        def extract_and_dl():
+            with yt_dlp.YoutubeDL(cls.YTDL_OPTIONS) as dl:
+                search_query = query if query.startswith('http') else f"scsearch:{query}"
+                try:
+                    info = dl.extract_info(search_query, download=True)
+                except Exception:
+                    info = dl.extract_info(f"ytsearch1:{query}", download=True)
+
+                if 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+                
+                file_id = info.get('id')
+                import glob
+                files = glob.glob(f"/tmp/{file_id}.*")
+                return info, files[0] if files else None
+
+        info, filepath = await loop.run_in_executor(None, extract_and_dl)
+        if not filepath:
+            return None
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        audio_source = discord.FFmpegPCMAudio(filepath, executable=ffmpeg_bin, options='-vn')
+        return cls(audio_source, data=info, filepath=filepath, volume=volume)
+
+class MusicPlayer:
+    def __init__(self, ctx):
+        self.bot = ctx.bot
+        self.guild = ctx.guild
+        self.channel = ctx.channel
+
+        self.queue = deque()
+        self.next = asyncio.Event()
+
+        self.current = None
+        self.volume = volume_levels.get(self.guild.id, 0.5)
+        
+        self.loop_mode = "off" # "off", "single", "all"
+        self.autoplay = False
+
+        ctx.bot.loop.create_task(self.player_loop())
+
+    async def player_loop(self):
+        await self.bot.wait_until_ready()
+
+        while not self.bot.is_closed():
+            self.next.clear()
+
+            if self.loop_mode == "single" and self.current:
+                source = await YTDLSource.create_source(self.current['query'], self.bot.loop, self.volume)
+            elif self.queue:
+                track = self.queue.popleft()
+                if self.loop_mode == "all":
+                    self.queue.append(track)
+                source = await YTDLSource.create_source(track['query'], self.bot.loop, self.volume)
+                self.current = track
+            elif self.autoplay and self.current:
+                auto_query = f"related to {self.current['title']}"
+                source = await YTDLSource.create_source(auto_query, self.bot.loop, self.volume)
+                if source:
+                    self.current = {'title': source.title, 'query': auto_query}
+                    await self.channel.send(f"📻 **[Autoplay]** Phát bài liên quan: **{source.title}**")
+                else:
+                    self.current = None
+                    await asyncio.sleep(1)
+                    continue
+            else:
+                self.current = None
+                await asyncio.sleep(1)
+                continue
+
+            if not source:
+                await self.channel.send("Lỗi tải bài hát, đang chuyển bài tiếp...")
+                continue
+
+            if self.guild.voice_client:
+                self.guild.voice_client.play(source, after=lambda _: self.bot.loop.call_soon_threadsafe(self.next.set))
+                await self.channel.send(f"🎵 Đang phát: **{source.title}** (Âm lượng: {int(self.volume * 100)}%)")
+                await self.next.wait()
+
+            try:
+                if source.filepath and os.path.exists(source.filepath):
+                    os.remove(source.filepath)
+            except Exception:
+                pass
+
+music_players = {}
+
+def get_player(ctx):
+    if ctx.guild.id not in music_players:
+        music_players[ctx.guild.id] = MusicPlayer(ctx)
+    return music_players[ctx.guild.id]
+
+# --- 5. CẤU HÌNH BOT DISCORD ---
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=['!An', '!an', '!'], intents=intents, help_command=None, case_insensitive=True)
 
-YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
-    'extractflat': 'in_playlist',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': True,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'scsearch',
-    'source_address': '0.0.0.0'
-}
-
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
-
-# Quản lý trạng thái nhạc & tính năng
-class GuildState:
-    def __init__(self):
-        self.queue = collections.deque()
-        self.current_track = None
-        self.loop_mode = "off"
-        self.autoplay = False
-        self.last_query = None
-        self.volume = 1.0  
-        self.fakevoice_target = None # Lưu ID người bị nhại giọng
-
-states = {}
-
-def get_state(guild_id: int) -> GuildState:
-    if guild_id not in states:
-        states[guild_id] = GuildState()
-    return states[guild_id]
-
-# --- 4. GIAO DIỆN TƯƠNG TÁC THỜI GIAN THỰC ---
-class MusicControlView(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=None)
-        self.ctx = ctx
-
-    @discord.ui.button(label="Tạm dừng / Phát", style=discord.ButtonStyle.secondary, emoji="⏯️")
-    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = self.ctx.voice_client
-        if not vc: return await interaction.response.send_message("Tớ không ở trong kênh thoại...", ephemeral=True)
-        if vc.is_playing():
-            vc.pause()
-            await interaction.response.send_message("⏸️ Đã tạm dừng nhạc.", ephemeral=True)
-        elif vc.is_paused():
-            vc.resume()
-            await interaction.response.send_message("▶️ Tiếp tục phát nhạc.", ephemeral=True)
-
-    @discord.ui.button(label="Bỏ qua", style=discord.ButtonStyle.primary, emoji="⏭️")
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = self.ctx.voice_client
-        if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()
-            await interaction.response.send_message("⏭️ Đã bỏ qua bài hiện tại.", ephemeral=True)
-
-    @discord.ui.button(label="Lặp lại", style=discord.ButtonStyle.success, emoji="🔁")
-    async def loop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = get_state(self.ctx.guild.id)
-        modes = ["off", "track", "queue"]
-        state.loop_mode = modes[(modes.index(state.loop_mode) + 1) % len(modes)]
-        
-        vc = self.ctx.voice_client
-        if state.loop_mode != "off" and vc and not vc.is_playing() and len(state.queue) == 0 and state.current_track:
-            bot.loop.create_task(play_next(self.ctx))
-            
-        await interaction.response.send_message(f"🔁 Chế độ lặp lại: **{state.loop_mode.upper()}**", ephemeral=True)
-
-    @discord.ui.button(label="AutoPlay", style=discord.ButtonStyle.primary, emoji="🎲")
-    async def autoplay(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = get_state(self.ctx.guild.id)
-        state.autoplay = not state.autoplay
-        
-        vc = self.ctx.voice_client
-        if state.autoplay and vc and not vc.is_playing() and not vc.is_paused() and len(state.queue) == 0:
-            bot.loop.create_task(play_next(self.ctx))
-            
-        await interaction.response.send_message(f"🎲 AutoPlay SoundCloud: **{'Bật' if state.autoplay else 'Tắt'}**", ephemeral=True)
-
-    @discord.ui.button(label="Dừng & Rời", style=discord.ButtonStyle.danger, emoji="⏹️")
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = self.ctx.voice_client
-        if vc:
-            state = get_state(self.ctx.guild.id)
-            state.queue.clear()
-            state.current_track = None
-            await vc.disconnect()
-            await interaction.response.send_message("👋 Tớ đã dừng nhạc và rời kênh thoại.", ephemeral=True)
-
-# --- 5. LOGIC PHÁT NHẠC ---
-async def play_next(ctx):
-    state = get_state(ctx.guild.id)
-    vc = ctx.voice_client
-
-    if not vc or not vc.is_connected(): return
-
-    if state.loop_mode == "track" and state.current_track:
-        state.queue.appendleft(state.current_track)
-    elif state.loop_mode == "queue" and state.current_track:
-        state.queue.append(state.current_track)
-
-    if len(state.queue) == 0 and state.autoplay and state.last_query:
-        try:
-            info = await asyncio.to_thread(lambda: ytdl.extract_info(f"scsearch5:{state.last_query} radio", download=False))
-            if info and 'entries' in info and len(info['entries']) > 1:
-                next_entry = random.choice(info['entries'][1:])
-                state.queue.append({
-                    'title': next_entry.get('title', 'Unknown'),
-                    'url': next_entry.get('url'),
-                    'webpage_url': next_entry.get('webpage_url'),
-                    'requester': 'Yuri AutoPlay'
-                })
-        except Exception: pass
-
-    if len(state.queue) == 0:
-        state.current_track = None
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
         return
+    raise error
 
-    track = state.queue.popleft()
-    state.current_track = track
+# --- 6. KHUNG GIỜ TỰ ĐỘNG NHẮN TIN ---
+@tasks.loop(minutes=30)
+async def auto_chat_schedule():
+    tz = pytz.timezone('Asia/Ho_Chi_Minh')
+    now = datetime.datetime.now(tz)
+    hour = now.hour
 
-    try:
-        ffmpeg_opts = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
-        source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(track['url'], **ffmpeg_opts), volume=state.volume)
-        
-        vc.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+    is_active_time = (6 <= hour < 12) or (14 <= hour < 22)
+    
+    if is_active_time and random.random() < 0.3:
+        for guild in bot.guilds:
+            for channel in guild.text_channels:
+                if channel.permissions_for(guild.me).send_messages:
+                    prompt = "Hãy chủ động nhắn một suy nghĩ ngắn ngẫu nhiên theo đúng tính cách An Nguyễn."
+                    msg = await ask_ai(prompt)
+                    await channel.send(msg)
+                    return
 
-        embed = discord.Embed(
-            title="🎧 Đang Bật Nhạc",
-            description=f"**[{track['title']}]({track['webpage_url']})**",
-            color=discord.Color.purple()
-        )
-        embed.set_thumbnail(url="https://i.imgur.com/v8R2K2E.png")
-        embed.add_field(name="Yêu cầu", value=f"`{track['requester']}`", inline=True)
-        embed.add_field(name="AutoPlay", value=f"`{'Bật' if state.autoplay else 'Tắt'}**", inline=True)
-        embed.add_field(name="Âm lượng", value=f"`{int(state.volume * 100)}%`", inline=True)
-        
-        await ctx.send(embed=embed, view=MusicControlView(ctx))
-    except Exception as e:
-        bot.loop.create_task(play_next(ctx))
-
-# --- 6. SỰ KIỆN BOT VÀ TÍNH NĂNG FAKEVOICE (PARROT MODE) ---
 @bot.event
 async def on_ready():
-    print(f"=== Bot Yuri đã kích hoạt: {bot.user} ===")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!Yhelps"))
+    print(f"Bot An Nguyễn đã sẵn sàng: {bot.user}")
+    if not auto_chat_schedule.is_running():
+        auto_chat_schedule.start()
 
 @bot.event
 async def on_message(message):
-    if message.author.bot: return
-
-    # Xử lý Fakevoice (Nhại lại nội dung người dùng gõ bằng TTS)
-    state = get_state(message.guild.id)
-    if state.fakevoice_target == message.author.id and message.content and not message.content.startswith("!"):
-        vc = message.guild.voice_client
-        if vc and not vc.is_playing():
-            unique_id = int(time.time() * 1000)
-            tts_file = f"fakevoice_{message.guild.id}_{unique_id}.mp3"
-            try:
-                gTTS(text=message.content, lang='vi').save(tts_file)
-                source = discord.FFmpegPCMAudio(tts_file)
-                vc.play(source, after=lambda e: os.remove(tts_file) if os.path.exists(tts_file) else None)
-            except Exception: pass
-
-    # Xử lý trò chuyện với AI
-    if bot.user.mentioned_in(message) and not message.mention_everyone:
+    if message.author == bot.user: return
+    
+    if bot.user.mentioned_in(message):
         clean_content = message.content.replace(f'<@{bot.user.id}>', '').strip()
-        if clean_content:
-            async with message.channel.typing():
-                try: await message.reply(yuri_model.generate_content(clean_content).text)
-                except Exception: await message.reply("Tâm trí tớ đang xao nhãng...")
-            return
+        if not clean_content: return
+        
+        if clean_content.lower().startswith("nhớ:"):
+            info = clean_content[4:].strip()
+            if ":" in info:
+                k, v = info.split(":", 1)
+                mem = load_memory()
+                mem[k.strip()] = v.strip()
+                save_memory(mem)
+                await message.channel.send(f"Tôi đã ghi nhớ thông tin này: **{k.strip()}**: {v.strip()}")
+                return
 
+        async with message.channel.typing():
+            prompt = f"Người dùng {message.author.display_name} vừa nói: '{clean_content}'. Đáp lại theo đúng phong cách An Nguyễn."
+            reply_text = await ask_ai(prompt)
+            await message.channel.send(reply_text)
+        return
+        
     await bot.process_commands(message)
 
-# --- 7. CÁC LỆNH BOT ---
-@bot.command(name="fakevoice", aliases=["nhai"])
-async def fakevoice(ctx, member: discord.Member = None):
-    """Bật/Tắt chế độ nhại lại lời nói qua Chat -> TTS"""
-    state = get_state(ctx.guild.id)
-    if not member:
-        state.fakevoice_target = None
-        return await ctx.send("🔇 Tớ đã tắt chế độ nhại giọng rồi nhé.")
+# ================= 7. BẢNG LỆNH !Ahelps & CHỨC NĂNG =================
+
+@bot.command(name='Ahelps', aliases=['ahelps', 'anhelps', 'helps'])
+async def ahelps_command(ctx):
+    embed = discord.Embed(
+        title="⚙️ Bảng Lệnh Hệ Thống — An Nguyễn",
+        description="*\"Cái chết không tồn tại.\"*",
+        color=0x2c3e50
+    )
     
-    state.fakevoice_target = member.id
-    await ctx.send(f"🦜 *Bật chế độ Fakevoice:* Bất cứ thứ gì **{member.display_name}** chat, tớ sẽ đọc lên trong Kênh thoại!")
-
-@bot.command(name="tts")
-async def tts_command(ctx, *, text: str):
-    """Phát văn bản thành giọng nói Google"""
-    if not ctx.author.voice: return await ctx.send("Cậu vào Kênh thoại trước nhé!")
-    vc = ctx.voice_client or await ctx.author.voice.channel.connect()
-
-    was_playing = vc.is_playing()
-    if was_playing: vc.pause()
-
-    async with ctx.typing():
-        tts_file = f"gtts_{ctx.guild.id}_{int(time.time() * 1000)}.mp3"
-        try:
-            gTTS(text=text, lang='vi').save(tts_file)
-            
-            def after_speaking(error):
-                if os.path.exists(tts_file): os.remove(tts_file)
-                if was_playing and vc and vc.is_paused(): vc.resume()
-
-            vc.play(discord.FFmpegPCMAudio(tts_file), after=after_speaking)
-            await ctx.send(f"🗣️ *Yuri cất lời:* \"{text}\"")
-        except Exception:
-            if was_playing and vc.is_paused(): vc.resume()
-
-@bot.command(name="autoplay", aliases=["ap"])
-async def autoplay_cmd(ctx):
-    """Bật/Tắt chế độ tự động phát nhạc"""
-    state = get_state(ctx.guild.id)
-    state.autoplay = not state.autoplay
-    vc = ctx.voice_client
-    if state.autoplay and vc and not vc.is_playing() and len(state.queue) == 0:
-        bot.loop.create_task(play_next(ctx))
-    await ctx.send(f"🎲 Chế độ AutoPlay đã được **{'BẬT' if state.autoplay else 'TẮT'}**.")
-
-@bot.command(name="vol", aliases=["volume"])
-async def set_volume(ctx, vol: int):
-    """Chỉnh âm lượng bot (Mỗi nấc 25%)"""
-    if vol not in [25, 50, 75, 100]: return await ctx.send("Chọn âm lượng: **25, 50, 75, hoặc 100** nhé.")
-    state = get_state(ctx.guild.id)
-    state.volume = vol / 100.0
-    vc = ctx.voice_client
-    if vc and vc.source and isinstance(vc.source, discord.PCMVolumeTransformer):
-        vc.source.volume = state.volume
-    await ctx.send(f"🔊 Âm lượng đang ở mức **{vol}%**.")
-
-@bot.command(name="play", aliases=["p"])
-async def play(ctx, *, query: str):
-    """Phát nhạc SoundCloud"""
-    if not ctx.author.voice: return await ctx.send("Cậu vào một Kênh thoại trước nhé!")
-    vc = ctx.voice_client or await ctx.author.voice.channel.connect()
-
-    state = get_state(ctx.guild.id)
-    state.last_query = query
-    async with ctx.typing():
-        search_query = query if query.startswith("http") else f"scsearch:{query}"
-        info = await asyncio.to_thread(lambda: ytdl.extract_info(search_query, download=False))
-        if not info: return await ctx.send("Không tìm thấy bài hát...")
-
-        entries = info['entries'] if 'entries' in info and query.startswith("http") else [info['entries'][0] if 'entries' in info else info]
-        for entry in entries:
-            if entry: state.queue.append({'title': entry.get('title'), 'url': entry.get('url'), 'webpage_url': entry.get('webpage_url', query), 'requester': ctx.author.display_name})
-
-        if not vc.is_playing() and not vc.is_paused():
-            await play_next(ctx)
-        else:
-            await ctx.send(f"🌸 Đã thêm **{len(entries)}** bài vào hàng đợi.")
-
-@bot.command(name="oneshot")
-async def oneshot(ctx, *, prompt: str):
-    """Sáng tác một truyện ngắn trực tiếp trên khung chat"""
-    async with ctx.typing():
-        try:
-            res = yuri_model.generate_content(f"Viết truyện ngắn oneshot sâu sắc về: '{prompt}'. Góc nhìn của Yuri.")
-            await ctx.send(embed=discord.Embed(title="🖋️ Tác Phẩm Oneshot Của Yuri", description=res.text, color=discord.Color.purple()))
-        except Exception: await ctx.send("Tâm trí tớ đang xao nhãng...")
-
-@bot.command(name="doctieuthuyet")
-async def doctieuthuyet(ctx, *, args: str):
-    """!doctieuthuyet <Chủ đề> | <Link nhạc nền>"""
-    if not ctx.author.voice: return await ctx.send("Cậu hãy vào kênh thoại nhé.")
-    vc = ctx.voice_client or await ctx.author.voice.channel.connect()
+    embed.add_field(
+        name="🎙️ Text To Speech (TTS)",
+        value="`!tts <văn bản>`: Xuất file âm thanh đọc văn bản vào chat text.\n"
+              "`!aitalk <câu hỏi>`: AI trả lời & đọc trực tiếp vào phòng Voice.\n"
+              "`!speak <văn bản>`: Đọc văn bản trực tiếp vào phòng Voice.",
+        inline=False
+    )
     
-    parts = args.split("|")
-    story_prompt, bgm_link = parts[0].strip(), parts[1].strip() if len(parts) > 1 else None
+    embed.add_field(
+        name="🎮 Minigames",
+        value="`!coquay` (`!roulette`): Thử vận may với Cò quay Nga 1/6.\n"
+              "`!dovui` (`!quiz`): Thử thách trắc nghiệm Tăng thiết giáp & Khoa học.",
+        inline=False
+    )
 
-    async with ctx.typing():
-        res = yuri_model.generate_content(f"Viết 1 đoạn truyện 200 từ thật sâu sắc về: {story_prompt}")
-        story_text = res.text
-        await ctx.send(embed=discord.Embed(title="📖 Đang đọc tác phẩm", description=story_text, color=discord.Color.dark_purple()))
+    embed.add_field(
+        name="🎶 Âm Nhạc SoundCloud & YouTube",
+        value="`!play <tên/link>`: Thêm bài hát vào danh sách phát.\n"
+              "`!queue`: Xem hàng đợi phát nhạc.\n"
+              "`!loop <off/single/all>`: Chế độ lặp lại bài hát.\n"
+              "`!autoplay`: Tự động tìm bài hát liên quan.\n"
+              "`!skip` | `!stop` | `!vol <25-100>`: Điều khiển phát nhạc.",
+        inline=False
+    )
 
-        tts_file = f"story_{ctx.guild.id}_{int(time.time()*1000)}.mp3"
-        await edge_tts.Communicate(story_text, "vi-VN-HoaiMyNeural").save(tts_file)
-
-        if vc.is_playing(): vc.stop()
-
-        def cleanup_and_resume(error):
-            if os.path.exists(tts_file): os.remove(tts_file)
-            asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
-
-        if bgm_link:
-            info = await asyncio.to_thread(lambda: ytdl.extract_info(bgm_link, download=False))
-            bgm_url = info['url'] if 'url' in info else info['entries'][0]['url']
-            opts = {
-                'before_options': f'-i "{tts_file}" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                'options': '-vn -filter_complex "[0:a]volume=1.0[tts];[1:a]volume=0.25[bgm];[tts][bgm]amix=inputs=2:duration=first"'
-            }
-            vc.play(discord.FFmpegPCMAudio(bgm_url, **opts), after=cleanup_and_resume)
-        else:
-            vc.play(discord.FFmpegPCMAudio(tts_file), after=cleanup_and_resume)
-
-@bot.command(name="Yhelps")
-async def yhelps(ctx):
-    """Bảng hiển thị toàn bộ lệnh"""
-    embed = discord.Embed(title="✨ Sổ Tay Lệnh Của Yuri", color=discord.Color.purple())
-    embed.add_field(name="🎵 Nhạc", value="`!play <link>`: Bật nhạc\n`!autoplay`: Bật/Tắt AutoPlay\n`!vol <25/50/75/100>`: Chỉnh âm lượng", inline=False)
-    embed.add_field(name="📖 Văn Học", value="`!oneshot <chủ đề>`: Yuri viết truyện ngắn tại chat\n`!doctieuthuyet <chủ đề> | <link nhạc>`: Đọc truyện & mix nhạc nền tự động", inline=False)
-    embed.add_field(name="🗣️ Voice & AI", value="`!tts <chữ>`: Giọng Google Việt Nam\n`!fakevoice @User`: Nhại nội dung chat của ai đó thành TTS\nTag `@Yuri` để trò chuyện", inline=False)
+    embed.add_field(
+        name="📖 Sáng Tác & Bộ Nhớ",
+        value="`!tieuthuyet <chủ đề>`: Viết kịch bản/tiểu thuyết ngắn.\n"
+              "Tag `@An Nguyễn nhớ: <Tên> : <Nội dung>` để lưu bộ nhớ lâu dài.",
+        inline=False
+    )
+    
+    embed.set_footer(text="An Nguyễn Bot • 15-16 tuổi • Misanthrope & Quantum Immortality")
     await ctx.send(embed=embed)
 
-if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+# --- 8. CHỨC NĂNG MINIGAMES ---
+
+@bot.command(name='coquay', aliases=['roulette'])
+async def russian_roulette(ctx):
+    bullet = random.randint(1, 6)
+    if bullet == 1:
+        msg = f"💥 ***ĐOÒNG!*** [Username: {ctx.author.display_name}]\n\n" \
+              f"Cậu tạch rồi. Nhưng yên tâm, dựa trên thuyết Bất tử lượng tử, ở một nhánh vũ trụ khác cậu vẫn đang sống nhăn răng. Cái chết không tồn tại đâu."
+    else:
+        msg = f"🔍 **Cạch...** [Username: {ctx.author.display_name}]\n\n" \
+              f"Ổ đạn trống. Vận may của cậu tốt đấy. Thử lại lần nữa không, hay sợ rồi?"
+    await ctx.send(msg)
+
+QUIZ_DATA = [
+    {
+        "q": "Đạn Tandem sinh ra để khắc chế loại giáp nào trên xe tăng?",
+        "options": ["A. Giáp thép đúc (RHA)", "B. Giáp phản ứng nổ (ERA)", "C. Giáp Composite", "D. Giáp gốm"],
+        "a": "B",
+        "explain": "Đạn Tandem có 2 đầu nổ: đầu 1 kích nổ giáp ERA, đầu 2 xuyên thẳng vào giáp chính."
+    },
+    {
+        "q": "Trong War Thunder/Cursed Tank Simulator, đạn APFSDS có ưu điểm lớn nhất là gì?",
+        "options": ["A. Bán kính nổ rộng", "B. Tốc độ đầu nòng cực cao và sơ tốc ổn định", "C. Tạo hiệu ứng áp suất âm", "D. Xuyên tốt hơn khi bắn vào nước"],
+        "a": "B",
+        "explain": "APFSDS là đạn động năng dưới cỡ có cánh đuôi, tốc độ rất cao giúp đường đạn phẳng và xuyên giáp dày."
+    },
+    {
+        "q": "Giả thuyết Bất tử lượng tử (Quantum Immortality) dựa trên diễn giải nào của vật lý lượng tử?",
+        "options": ["A. Diễn giải Copenhagen", "B. Thuyết Đa vũ trụ (Many-Worlds Interpretation)", "C. Thuyết Tương đối hẹp", "D. Lý thuyết Đột biến Lượng tử"],
+        "a": "B",
+        "explain": "Lý thuyết này cho rằng ý thức của một người luôn tiếp tục tồn tại ở ít nhất một nhánh vũ trụ song song."
+    }
+]
+
+@bot.command(name='dovui', aliases=['quiz'])
+async def tank_quiz(ctx):
+    item = random.choice(QUIZ_DATA)
+    options_text = "\n".join(item["options"])
+    
+    embed = discord.Embed(
+        title="🧠 Thử Thách Tri Thức — An Nguyễn",
+        description=f"**Câu hỏi:** {item['q']}\n\n{options_text}\n\n*Nhập câu trả lời (A, B, C hoặc D) trong vòng 15 giây...*",
+        color=0x3498db
+    )
+    await ctx.send(embed=embed)
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.upper() in ["A", "B", "C", "D"]
+
+    try:
+        reply = await bot.wait_for('message', timeout=15.0, check=check)
+        user_ans = reply.content.upper()
+        if user_ans == item["a"]:
+            await ctx.send(f"✅ Đúng rồi đấy {ctx.author.display_name}. {item['explain']}")
+        else:
+            await ctx.send(f"❌ Sai rồi. Đáp án đúng là **{item['a']}**. {item['explain']}")
+    except asyncio.TimeoutError:
+        await ctx.send(f"⏳ Hết giờ! Đáp án đúng là **{item['a']}**.")
+
+# --- 9. CHỨC NĂNG TEXT TO SPEECH (TTS 1 & 2) ---
+
+# Loại 1: Nhập lệnh -> Xuất file MP3 vào chat text
+@bot.command(name='tts')
+async def tts_file(ctx, *, text: str):
+    async with ctx.typing():
+        filename = f"/tmp/tts_{uuid.uuid4().hex[:8]}.mp3"
+        try:
+            tts = gTTS(text=text, lang='vi')
+            tts.save(filename)
+            await ctx.send(file=discord.File(filename, filename="an_nguyen_speech.mp3"))
+        except Exception as e:
+            await ctx.send(f"Lỗi tạo giọng nói: {e}")
+        finally:
+            if os.path.exists(filename):
+                os.remove(filename)
+
+# Loại 2: AI trả lời & Đọc trực tiếp vào kênh Voice
+@bot.command(name='aitalk')
+async def ai_voice_talk(ctx, *, prompt: str):
+    if not ctx.author.voice:
+        return await ctx.send("Cậu phải vào phòng voice trước thì tôi mới vào nói chuyện được.")
+    
+    if not ctx.voice_client:
+        await ctx.author.voice.channel.connect()
+
+    async with ctx.typing():
+        ai_reply = await ask_ai(f"Trả lời câu hỏi sau một cách ngắn gọn, súc tích bằng tiếng Việt: {prompt}")
+        await ctx.send(f"💬 **An Nguyễn:** {ai_reply}")
+
+        filename = f"/tmp/vtts_{uuid.uuid4().hex[:8]}.mp3"
+        try:
+            tts = gTTS(text=ai_reply, lang='vi')
+            tts.save(filename)
+
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+            audio_source = discord.FFmpegPCMAudio(filename, executable=ffmpeg_bin)
+            
+            if ctx.voice_client.is_playing():
+                ctx.voice_client.stop()
+
+            ctx.voice_client.play(audio_source)
+        except Exception as e:
+            await ctx.send(f"Lỗi phát giọng nói vào voice: {e}")
+
+# Loại 2 phụ: Đọc trực tiếp văn bản tùy chỉnh vào kênh Voice
+@bot.command(name='speak')
+async def speak_in_voice(ctx, *, text: str):
+    if not ctx.author.voice:
+        return await ctx.send("Cậu vào phòng voice trước đi.")
+    
+    if not ctx.voice_client:
+        await ctx.author.voice.channel.connect()
+
+    filename = f"/tmp/speak_{uuid.uuid4().hex[:8]}.mp3"
+    try:
+        tts = gTTS(text=text, lang='vi')
+        tts.save(filename)
+
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        audio_source = discord.FFmpegPCMAudio(filename, executable=ffmpeg_bin)
+        
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+
+        ctx.voice_client.play(audio_source)
+        await ctx.send(f"🎙️ Đang phát giọng nói: *\"{text}\"*")
+    except Exception as e:
+        await ctx.send(f"Lỗi phát âm thanh: {e}")
+
+# --- 10. CÁC LỆNH NHẠC & TIỂU THUYẾT ---
+
+@bot.command(name='play', aliases=['p'])
+async def play_music(ctx, *, search: str):
+    if not ctx.author.voice:
+        return await ctx.send("Cậu vào phòng voice trước đi rồi tôi mới vào phát nhạc được.")
+    if not ctx.voice_client:
+        await ctx.author.voice.channel.connect()
+
+    player = get_player(ctx)
+    player.queue.append({'title': search, 'query': search})
+    
+    if ctx.voice_client.is_playing():
+        await ctx.send(f"➕ Đã thêm vào danh sách chờ: **{search}** (Vị trí: #{len(player.queue)})")
+    else:
+        await ctx.send(f"🔍 Đang tìm kiếm và chuẩn bị phát: **{search}**...")
+
+@bot.command(name='queue', aliases=['q'])
+async def show_queue(ctx):
+    player = get_player(ctx)
+    if not player.current and not player.queue:
+        return await ctx.send("Danh sách chờ hiện đang trống.")
+
+    embed = discord.Embed(title="🎶 Danh Sách Phát Nhạc", color=0x34495e)
+    if player.current:
+        embed.add_field(name="▶️ Đang phát:", value=f"**{player.current['title']}**", inline=False)
+    
+    if player.queue:
+        queue_list = "\n".join([f"`{i+1}.` {track['title']}" for i, track in enumerate(list(player.queue)[:10])])
+        embed.add_field(name="📋 Hàng đợi:", value=queue_list, inline=False)
+        if len(player.queue) > 10:
+            embed.set_footer(text=f"Và còn {len(player.queue) - 10} bài hát khác...")
+    
+    embed.add_field(name="⚙️ Trạng thái:", value=f"Loop: `{player.loop_mode}` | Autoplay: `{player.autoplay}`", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name='loop')
+async def toggle_loop(ctx, mode: str = None):
+    player = get_player(ctx)
+    if mode in ["off", "single", "all"]:
+        player.loop_mode = mode
+    else:
+        modes = {"off": "single", "single": "all", "all": "off"}
+        player.loop_mode = modes[player.loop_mode]
+
+    status_map = {"off": "Tắt", "single": "Lặp 1 bài", "all": "Lặp toàn bộ danh sách"}
+    await ctx.send(f"🔁 Chế độ Lặp (Loop): **{status_map[player.loop_mode]}**")
+
+@bot.command(name='autoplay')
+async def toggle_autoplay(ctx):
+    player = get_player(ctx)
+    player.autoplay = not player.autoplay
+    status = "Bật" if player.autoplay else "Tắt"
+    await ctx.send(f"📻 Chế độ Tự động phát bài liên quan (Autoplay): **{status}**")
+
+@bot.command(name='skip', aliases=['s'])
+async def skip_track(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭️ Đã bỏ qua bài hát hiện tại.")
+    else:
+        await ctx.send("Không có bài hát nào đang phát để bỏ qua.")
+
+@bot.command(name='stop', aliases=['leave'])
+async def stop_music(ctx):
+    player = get_player(ctx)
+    player.queue.clear()
+    player.current = None
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("⏹️ Đã dừng phát nhạc và rời phòng voice.")
+
+@bot.command(name='vol')
+async def set_volume(ctx, volume: int):
+    if volume not in [25, 50, 75, 100]:
+        return await ctx.send("Chọn mức âm lượng 25, 50, 75 hoặc 100 thôi.")
+    player = get_player(ctx)
+    player.volume = volume / 100
+    volume_levels[ctx.guild.id] = player.volume
+    if ctx.voice_client and ctx.voice_client.source:
+        ctx.voice_client.source.volume = player.volume
+    await ctx.send(f"🔊 Đã chỉnh âm lượng thành **{volume}%**.")
+
+@bot.command(name='tieuthuyet')
+async def write_novel(ctx, *, topic: str):
+    async with ctx.typing():
+        prompt = f"Hãy viết một đoạn tiểu thuyết hoặc kịch bản tâm lý/dark fantasy ngắn về chủ đề: {topic}."
+        story = await ask_ai(prompt)
+        await ctx.send(story)
+
+if __name__ == '__main__':
+    threading.Thread(target=run_flask, daemon=True).start()
+    if os.environ.get('DISCORD_TOKEN'):
+        bot.run(os.environ.get('DISCORD_TOKEN'))
